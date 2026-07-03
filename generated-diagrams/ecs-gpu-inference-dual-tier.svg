@@ -1,0 +1,236 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" font-family="Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#555"/></marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#4CAF50"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1976D2"/></marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#D32F2F"/></marker>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#999"/></marker>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#E65100"/></marker>
+    <marker id="arrow-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#7B2F8E"/></marker>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="1" dy="1" stdDeviation="2" flood-opacity="0.15"/></filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="820" fill="#FAFAFA" rx="8"/>
+
+  <!-- Title -->
+  <text x="600" y="32" text-anchor="middle" font-size="17" font-weight="bold" fill="#232F3E">Dual-Tier GPU Inference Pipeline on Amazon ECS Managed Instances</text>
+  <text x="600" y="50" text-anchor="middle" font-size="11" fill="#666">with NVIDIA GPU Metrics (DCGM) via Container Insights · Bedrock Nova Micro classifier for ambiguous routing</text>
+
+  <!-- VPC boundary -->
+  <rect x="370" y="60" width="720" height="490" rx="12" fill="none" stroke="#BDBDBD" stroke-width="1.5" stroke-dasharray="8,4"/>
+  <text x="385" y="78" font-size="10" fill="#9E9E9E">VPC — Private Subnets (2 AZs) + VPC Endpoints</text>
+
+  <!-- Producer -->
+  <rect x="30" y="255" width="100" height="55" rx="8" fill="#232F3E" filter="url(#shadow)"/>
+  <text x="80" y="278" text-anchor="middle" font-size="11" font-weight="bold" fill="white">Producer</text>
+  <text x="80" y="296" text-anchor="middle" font-size="10" fill="#CCC">Application</text>
+
+  <!-- API Gateway -->
+  <rect x="175" y="255" width="110" height="55" rx="8" fill="#E7157B" filter="url(#shadow)"/>
+  <text x="230" y="278" text-anchor="middle" font-size="11" font-weight="bold" fill="white">API Gateway</text>
+  <text x="230" y="296" text-anchor="middle" font-size="10" fill="#FFF">POST /infer</text>
+
+  <!-- Router Lambda -->
+  <rect x="330" y="242" width="120" height="82" rx="8" fill="#ED7100" filter="url(#shadow)"/>
+  <text x="390" y="262" text-anchor="middle" font-size="11" font-weight="bold" fill="white">Router Lambda</text>
+  <text x="390" y="278" text-anchor="middle" font-size="9" fill="#FFF">• prompt length</text>
+  <text x="390" y="291" text-anchor="middle" font-size="9" fill="#FFF">• maxTokens</text>
+  <text x="390" y="304" text-anchor="middle" font-size="9" fill="#FFF">• explicit route</text>
+  <text x="390" y="319" text-anchor="middle" font-size="8" fill="#FFE0B2">↑ RoutedRequests metric</text>
+
+  <!-- Bedrock classifier node -->
+  <rect x="315" y="355" width="150" height="58" rx="8" fill="#7B2F8E" filter="url(#shadow)"/>
+  <text x="390" y="374" text-anchor="middle" font-size="10" font-weight="bold" fill="white">Amazon Bedrock</text>
+  <text x="390" y="388" text-anchor="middle" font-size="9" fill="#E1BEE7">Nova Micro classifier</text>
+  <text x="390" y="401" text-anchor="middle" font-size="8" fill="#CE93D8">ambiguous zone: 500–2000 chars</text>
+  <text x="390" y="412" text-anchor="middle" font-size="8" fill="#CE93D8">~$0.0001/req · fallback→small</text>
+
+  <!-- Router → Bedrock (dashed, only for ambiguous) -->
+  <line x1="390" y1="324" x2="390" y2="353" stroke="#7B2F8E" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#arrow-purple)"/>
+  <text x="408" y="342" font-size="8" fill="#7B2F8E">ambiguous</text>
+
+  <!-- Bedrock → Router result (return arrow) -->
+  <path d="M315,384 L295,384 L295,283 L328,283" fill="none" stroke="#7B2F8E" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-purple)"/>
+  <text x="270" y="335" font-size="8" fill="#7B2F8E" transform="rotate(-90,270,335)">small/large</text>
+
+  <!-- ===== SMALL TIER ===== -->
+  <rect x="510" y="85" width="560" height="175" rx="10" fill="#E8F5E9" stroke="#4CAF50" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="525" y="105" font-size="12" font-weight="bold" fill="#2E7D32">Small Model Tier — Mistral-7B-AWQ</text>
+
+  <!-- Small Queue -->
+  <rect x="530" y="120" width="80" height="48" rx="6" fill="#E7157B" filter="url(#shadow)"/>
+  <text x="570" y="141" text-anchor="middle" font-size="10" font-weight="bold" fill="white">Small Queue</text>
+  <text x="570" y="157" text-anchor="middle" font-size="9" fill="#FFF">SQS</text>
+
+  <!-- Small ECS Task -->
+  <rect x="650" y="115" width="170" height="60" rx="6" fill="white" stroke="#4CAF50" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="735" y="133" text-anchor="middle" font-size="10" font-weight="bold" fill="#232F3E">ECS Managed Instance</text>
+  <text x="735" y="148" text-anchor="middle" font-size="10" fill="#4CAF50" font-weight="bold">g6e.xlarge · 1× L40S</text>
+  <text x="735" y="163" text-anchor="middle" font-size="9" fill="#666">vLLM v0.8.0 · TP=1</text>
+
+  <!-- Small DCGM badge -->
+  <rect x="650" y="180" width="170" height="18" rx="3" fill="#FFF3E0" stroke="#E65100" stroke-width="0.8"/>
+  <text x="735" y="193" text-anchor="middle" font-size="8" fill="#E65100">📊 DCGM → TaskGPU* metrics</text>
+
+  <!-- Small Scaling -->
+  <rect x="870" y="120" width="95" height="48" rx="6" fill="#FFF3E0" stroke="#ED7100" stroke-width="1" filter="url(#shadow)"/>
+  <text x="917" y="139" text-anchor="middle" font-size="9" font-weight="bold" fill="#E65100">Auto Scaling</text>
+  <text x="917" y="153" text-anchor="middle" font-size="8" fill="#666">0→10 · 120s cool</text>
+
+  <!-- Small Scaling Lambda -->
+  <rect x="980" y="120" width="75" height="48" rx="6" fill="#ED7100" filter="url(#shadow)"/>
+  <text x="1017" y="139" text-anchor="middle" font-size="8" font-weight="bold" fill="white">Scaling λ</text>
+  <text x="1017" y="153" text-anchor="middle" font-size="7" fill="#FFE0B2">TaskGPUMem</text>
+  <text x="1017" y="163" text-anchor="middle" font-size="7" fill="#FFE0B2">Utilization</text>
+
+  <!-- Small metrics line -->
+  <text x="525" y="245" font-size="8" fill="#4CAF50">~$1.01/hr · ~7 min cold start · 12.8 tok/s · 6 msgs in 30s warm</text>
+
+  <!-- ===== LARGE TIER ===== -->
+  <rect x="510" y="270" width="560" height="175" rx="10" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="525" y="290" font-size="12" font-weight="bold" fill="#1565C0">Large Model Tier — Llama-2-70B-AWQ</text>
+
+  <!-- Large Queue -->
+  <rect x="530" y="305" width="80" height="48" rx="6" fill="#E7157B" filter="url(#shadow)"/>
+  <text x="570" y="326" text-anchor="middle" font-size="10" font-weight="bold" fill="white">Large Queue</text>
+  <text x="570" y="342" text-anchor="middle" font-size="9" fill="#FFF">SQS</text>
+
+  <!-- Large ECS Task -->
+  <rect x="650" y="300" width="170" height="60" rx="6" fill="white" stroke="#1976D2" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="735" y="318" text-anchor="middle" font-size="10" font-weight="bold" fill="#232F3E">ECS Managed Instance</text>
+  <text x="735" y="333" text-anchor="middle" font-size="10" fill="#1976D2" font-weight="bold">g6e.48xlarge · 8× L40S</text>
+  <text x="735" y="348" text-anchor="middle" font-size="9" fill="#666">vLLM v0.8.0 · TP=8</text>
+
+  <!-- Large DCGM badge -->
+  <rect x="650" y="365" width="170" height="18" rx="3" fill="#E3F2FD" stroke="#1976D2" stroke-width="0.8"/>
+  <text x="735" y="378" text-anchor="middle" font-size="8" fill="#1565C0">📊 DCGM → per-device AcceleratedDevice</text>
+
+  <!-- Large Scaling -->
+  <rect x="870" y="305" width="95" height="48" rx="6" fill="#E3F2FD" stroke="#1976D2" stroke-width="1" filter="url(#shadow)"/>
+  <text x="917" y="324" text-anchor="middle" font-size="9" font-weight="bold" fill="#1565C0">Auto Scaling</text>
+  <text x="917" y="338" text-anchor="middle" font-size="8" fill="#666">0→4 · 600s cool</text>
+
+  <!-- Large Scaling Lambda -->
+  <rect x="980" y="305" width="75" height="48" rx="6" fill="#ED7100" filter="url(#shadow)"/>
+  <text x="1017" y="324" text-anchor="middle" font-size="8" font-weight="bold" fill="white">Scaling λ</text>
+  <text x="1017" y="338" text-anchor="middle" font-size="7" fill="#FFE0B2">TaskGPUMem</text>
+  <text x="1017" y="348" text-anchor="middle" font-size="7" fill="#FFE0B2">Utilization</text>
+
+  <!-- Large metrics line -->
+  <text x="525" y="430" font-size="8" fill="#1976D2">~$13.35/hr · ~15 min cold start · 8× GPU tensor parallel</text>
+
+  <!-- GPU Auto-Repair badge -->
+  <rect x="650" y="460" width="170" height="28" rx="4" fill="#FFEBEE" stroke="#D32F2F" stroke-width="1"/>
+  <text x="735" y="479" text-anchor="middle" font-size="10" font-weight="bold" fill="#D32F2F">🛡 GPU Auto-Repair (DCGM)</text>
+
+  <!-- DLQ -->
+  <rect x="530" y="505" width="80" height="40" rx="6" fill="#FFCDD2" stroke="#D32F2F" stroke-width="1" filter="url(#shadow)"/>
+  <text x="570" y="523" text-anchor="middle" font-size="9" font-weight="bold" fill="#D32F2F">DLQ</text>
+  <text x="570" y="537" text-anchor="middle" font-size="8" fill="#D32F2F">SQS (shared)</text>
+
+  <!-- S3 Results -->
+  <rect x="1110" y="200" width="75" height="65" rx="8" fill="#3F8624" filter="url(#shadow)"/>
+  <text x="1147" y="225" text-anchor="middle" font-size="11" font-weight="bold" fill="white">S3</text>
+  <text x="1147" y="241" text-anchor="middle" font-size="8" fill="#C8E6C9">Results</text>
+  <text x="1147" y="253" text-anchor="middle" font-size="7" fill="#C8E6C9">{requestId}.json</text>
+
+  <!-- CloudWatch -->
+  <rect x="1095" y="310" width="100" height="120" rx="8" fill="#E7157B" filter="url(#shadow)"/>
+  <text x="1145" y="332" text-anchor="middle" font-size="10" font-weight="bold" fill="white">CloudWatch</text>
+  <text x="1145" y="348" text-anchor="middle" font-size="8" fill="#FFF">Container Insights</text>
+  <text x="1145" y="362" text-anchor="middle" font-size="7" fill="#FFE0B2">── GPU Metrics ──</text>
+  <text x="1145" y="374" text-anchor="middle" font-size="7" fill="#FFF">TaskGPUUtilization</text>
+  <text x="1145" y="385" text-anchor="middle" font-size="7" fill="#FFF">TaskGPUMemory*</text>
+  <text x="1145" y="396" text-anchor="middle" font-size="7" fill="#FFF">TaskGPUTemperature</text>
+  <text x="1145" y="407" text-anchor="middle" font-size="7" fill="#FFF">TaskGPUPowerDraw</text>
+  <text x="1145" y="418" text-anchor="middle" font-size="7" fill="#FFF">TaskGPUXidCount</text>
+
+  <!-- Alarms box -->
+  <rect x="1095" y="445" width="100" height="60" rx="6" fill="#FFF3E0" stroke="#E65100" stroke-width="1" filter="url(#shadow)"/>
+  <text x="1145" y="462" text-anchor="middle" font-size="9" font-weight="bold" fill="#E65100">Alarms (3)</text>
+  <text x="1145" y="475" text-anchor="middle" font-size="7" fill="#666">🌡 Temp > 90°C</text>
+  <text x="1145" y="486" text-anchor="middle" font-size="7" fill="#666">⚠ XID Errors > 0</text>
+  <text x="1145" y="497" text-anchor="middle" font-size="7" fill="#666">📬 DLQ Depth > 0</text>
+
+  <!-- ===== ARROWS ===== -->
+  <!-- Producer → API GW -->
+  <line x1="130" y1="282" x2="173" y2="282" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="152" y="275" text-anchor="middle" font-size="8" fill="#999">HTTPS</text>
+
+  <!-- API GW → Router -->
+  <line x1="285" y1="282" x2="328" y2="282" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Router → Small Queue -->
+  <path d="M450,270 L490,270 L490,144 L528,144" fill="none" stroke="#4CAF50" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <text x="480" y="200" font-size="11" font-weight="bold" fill="#4CAF50">small</text>
+
+  <!-- Router → Large Queue -->
+  <path d="M450,300 L490,300 L490,329 L528,329" fill="none" stroke="#1976D2" stroke-width="2.5" marker-end="url(#arrow-blue)"/>
+  <text x="480" y="322" font-size="11" font-weight="bold" fill="#1976D2">large</text>
+
+  <!-- Small Queue → Small ECS -->
+  <line x1="610" y1="144" x2="648" y2="144" stroke="#4CAF50" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- Large Queue → Large ECS -->
+  <line x1="610" y1="329" x2="648" y2="329" stroke="#1976D2" stroke-width="2" marker-end="url(#arrow-blue)"/>
+
+  <!-- Small ECS → S3 -->
+  <path d="M820,145 L1050,145 L1050,230 L1108,230" fill="none" stroke="#4CAF50" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+
+  <!-- Large ECS → S3 -->
+  <path d="M820,330 L1050,330 L1050,245 L1108,245" fill="none" stroke="#1976D2" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+  <!-- Small ECS → DLQ -->
+  <path d="M700,175 L700,200 L640,200 L640,525 L612,525" fill="none" stroke="#D32F2F" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-red)"/>
+  <text x="628" y="510" font-size="7" fill="#D32F2F">malformed</text>
+
+  <!-- DCGM metrics flow: Small tier → CloudWatch -->
+  <path d="M820,189 L850,189 L850,85 L1145,85 L1145,308" fill="none" stroke="#E65100" stroke-width="1.2" stroke-dasharray="3,3" marker-end="url(#arrow-orange)"/>
+  <text x="990" y="80" font-size="8" fill="#E65100">NVIDIA DCGM metrics (auto-published)</text>
+
+  <!-- DCGM metrics flow: Large tier → CloudWatch -->
+  <path d="M820,374 L850,374 L850,395 L1093,395" fill="none" stroke="#E65100" stroke-width="1.2" stroke-dasharray="3,3" marker-end="url(#arrow-orange)"/>
+
+  <!-- Scaling Lambda → CloudWatch -->
+  <line x1="1055" y1="144" x2="1093" y2="350" stroke="#999" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
+  <line x1="1055" y1="329" x2="1093" y2="370" stroke="#999" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-gray)"/>
+
+  <!-- CloudWatch → Alarms -->
+  <line x1="1145" y1="430" x2="1145" y2="443" stroke="#E65100" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+
+  <!-- Legend -->
+  <rect x="20" y="640" width="1160" height="170" rx="8" fill="white" stroke="#E0E0E0" stroke-width="1"/>
+  <text x="40" y="662" font-size="12" font-weight="bold" fill="#232F3E">NVIDIA GPU Metrics (ECS/ContainerInsights namespace)</text>
+  <text x="40" y="680" font-size="9" fill="#666">Published automatically by ECS Managed Instances via DCGM — no sidecar or agent required</text>
+
+  <!-- Legend table -->
+  <text x="40" y="702" font-size="9" font-weight="bold" fill="#232F3E">Metric</text>
+  <text x="310" y="702" font-size="9" font-weight="bold" fill="#232F3E">Unit</text>
+  <text x="400" y="702" font-size="9" font-weight="bold" fill="#232F3E">Used For</text>
+  <line x1="40" y1="706" x2="1160" y2="706" stroke="#E0E0E0" stroke-width="0.5"/>
+
+  <text x="40" y="720" font-size="9" fill="#E65100" font-weight="bold">TaskGPUMemoryUtilization</text>
+  <text x="310" y="720" font-size="9" fill="#666">%</text>
+  <text x="400" y="720" font-size="9" fill="#666">Composite scaling metric (per-service) — feeds autoscaling Lambda</text>
+
+  <text x="40" y="736" font-size="9" fill="#E65100" font-weight="bold">TaskGPUUtilization</text>
+  <text x="310" y="736" font-size="9" fill="#666">%</text>
+  <text x="400" y="736" font-size="9" fill="#666">Dashboard — GPU compute core saturation</text>
+
+  <text x="40" y="752" font-size="9" fill="#D32F2F" font-weight="bold">TaskGPUTemperature</text>
+  <text x="310" y="752" font-size="9" fill="#666">°C</text>
+  <text x="400" y="752" font-size="9" fill="#666">Alarm → SNS when > 90°C (thermal protection)</text>
+
+  <text x="40" y="768" font-size="9" fill="#D32F2F" font-weight="bold">TaskGPURestartAppXidCount</text>
+  <text x="310" y="768" font-size="9" fill="#666">Count</text>
+  <text x="400" y="768" font-size="9" fill="#666">Alarm → SNS on XID errors (early warning before auto-repair)</text>
+
+  <text x="40" y="784" font-size="9" fill="#E65100" font-weight="bold">TaskGPUMemoryUsed / PowerDraw</text>
+  <text x="310" y="784" font-size="9" fill="#666">B / W</text>
+  <text x="400" y="784" font-size="9" fill="#666">Dashboard — absolute VRAM per tier, power consumption</text>
+
+  <text x="40" y="800" font-size="9" fill="#E65100" font-weight="bold">InstanceGPULimit / UsageTotal</text>
+  <text x="310" y="800" font-size="9" fill="#666">Count</text>
+  <text x="400" y="800" font-size="9" fill="#666">Dashboard — fleet GPU capacity vs. allocation</text>
+</svg>

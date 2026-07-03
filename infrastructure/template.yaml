@@ -1,0 +1,2012 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS GPU Inference Pipeline - VPC, networking, and VPC endpoints
+
+Parameters:
+  ModelS3Path:
+    Type: String
+    Description: S3 URI for the model artifacts (e.g., s3://bucket/model/)
+    Default: 'none'
+
+  ModelName:
+    Type: String
+    Description: HuggingFace model identifier for vLLM
+
+  QuantizationMethod:
+    Type: String
+    Default: awq
+    AllowedValues:
+      - awq
+      - gptq
+      - none
+    Description: Quantization method for the model
+
+  MaxSequenceLength:
+    Type: Number
+    Default: 2048
+    Description: Maximum sequence length for vLLM
+
+  MinTaskCount:
+    Type: Number
+    Default: 0
+    Description: Minimum number of ECS tasks (0 enables scale-to-zero)
+
+  MaxTaskCount:
+    Type: Number
+    Default: 10
+    Description: Maximum number of ECS tasks
+
+  QueueDepthScaleThreshold:
+    Type: Number
+    Default: 5
+    Description: Queue depth threshold for scaling metric calculation
+
+  ScaleDownCooldownSeconds:
+    Type: Number
+    Default: 300
+    Description: Cooldown period in seconds before scaling down idle GPU instances
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch log group retention period in days
+
+  OutputDestination:
+    Type: String
+    Default: ''
+    Description: Output destination for inference results (S3 URI or SQS queue URL)
+
+  CostAllocationTagProject:
+    Type: String
+    Default: gpu-inference-pipeline
+    Description: Cost allocation tag value for tracking inference pipeline spend
+
+  # Large Model Parameters
+  LargeModelS3Path:
+    Type: String
+    Default: 'none'
+    Description: S3 URI for the large model artifacts (e.g., s3://bucket/llama-70b/)
+
+  LargeModelName:
+    Type: String
+    Default: ''
+    Description: HuggingFace model identifier for the large model
+
+  LargeModelQuantization:
+    Type: String
+    Default: awq
+    AllowedValues:
+      - awq
+      - gptq
+      - none
+    Description: Quantization method for the large model
+
+  LargeModelMaxSequenceLength:
+    Type: Number
+    Default: 4096
+    Description: Maximum sequence length for the large model
+
+  LargeModelMinTaskCount:
+    Type: Number
+    Default: 0
+    Description: Minimum number of large-model ECS tasks
+
+  LargeModelMaxTaskCount:
+    Type: Number
+    Default: 4
+    Description: Maximum number of large-model ECS tasks
+
+  LargeModelGPUCount:
+    Type: Number
+    Default: 8
+    Description: Number of GPUs per large-model task
+
+  PromptComplexityThreshold:
+    Type: Number
+    Default: 2000
+    Description: Prompt character length threshold for routing to large model
+
+  MaxTokensComplexityThreshold:
+    Type: Number
+    Default: 1024
+    Description: maxTokens threshold for routing to large model
+
+Resources:
+  #############################################
+  # VPC and Networking
+  #############################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-igw'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  #############################################
+  # Public Subnet (for NAT Gateway)
+  #############################################
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-subnet'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public-rt'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  #############################################
+  # NAT Gateway
+  #############################################
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-nat-eip'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-nat'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # Private Subnets (2 AZs for ECS tasks)
+  #############################################
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-subnet-a'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-subnet-b'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-private-rt'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  #############################################
+  # Security Group for VPC Endpoints
+  #############################################
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for VPC interface endpoints
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: Allow HTTPS from VPC
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: Allow HTTPS responses back into VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpce-sg'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # VPC Endpoints
+  #############################################
+
+  # S3 Gateway Endpoint
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # SQS Interface Endpoint
+  SQSInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sqs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  # ECR API Interface Endpoint
+  ECRApiInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  # ECR DKR Interface Endpoint
+  ECRDkrInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  # CloudWatch Logs Interface Endpoint
+  CloudWatchLogsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  #############################################
+  # IAM Roles
+  #############################################
+
+  # ECS Task Execution Role - allows ECS agent to pull images and push logs
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-task-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-task-execution-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # ECS Task Role - least-privilege permissions for the inference container
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-task-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InferenceTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3ModelAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !Select [2, !Split ['/', !Ref ModelS3Path]]
+              - Sid: S3ModelBucketList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !Select [2, !Split ['/', !Ref ModelS3Path]]
+              - Sid: SQSRequestQueueAccess
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt RequestQueue.Arn
+              - Sid: SQSDLQAccess
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !GetAtt DeadLetterQueue.Arn
+              - Sid: CloudWatchLogsAccess
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub '${InferenceLogGroup.Arn}:*'
+              - Sid: CloudWatchMetricsAccess
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Custom/ECSInference
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-task-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # ECS Task Role for Large Model - reads from large queue, writes to same DLQ/output
+  LargeModelTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-large-task-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LargeInferenceTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3LargeModelAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !Select [2, !Split ['/', !Ref LargeModelS3Path]]
+              - Sid: S3LargeModelBucketList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !Select [2, !Split ['/', !Ref LargeModelS3Path]]
+              - Sid: SQSLargeQueueAccess
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt LargeModelRequestQueue.Arn
+              - Sid: SQSDLQAccess
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !GetAtt DeadLetterQueue.Arn
+              - Sid: CloudWatchLogsAccess
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub '${LargeModelLogGroup.Arn}:*'
+              - Sid: CloudWatchMetricsAccess
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Custom/ECSInference
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-task-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # ECS Infrastructure Role - allows ECS to manage Managed Instances on your behalf
+  ECSInfrastructureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-infrastructure-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccessToECSForInfrastructureManagement
+            Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonECSInfrastructureRolePolicyForManagedInstances
+      Policies:
+        - PolicyName: PassInstanceRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt ECSInstanceRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ec2.amazonaws.com
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-infrastructure-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # EC2 Instance Role - used by Managed Instances for ECS agent and AWS service access
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-instance-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-instance-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # EC2 Instance Profile - passed to Managed Instances capacity provider
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${AWS::StackName}-instance-profile'
+      Roles:
+        - !Ref ECSInstanceRole
+
+  #############################################
+  # ECS Cluster and Compute Resources
+  #############################################
+
+  # Security Group for ECS Managed Instances
+  ECSInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS Managed Instances
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-ecs-instance-sg'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${AWS::StackName}-cluster'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enhanced
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-cluster'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # Managed Instances Capacity Provider with GPU auto-repair
+  GPUCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      Name: !Sub 'gpu-inference-${AWS::StackName}-capacity'
+      ClusterName: !Ref ECSCluster
+      ManagedInstancesProvider:
+        InfrastructureRoleArn: !GetAtt ECSInfrastructureRole.Arn
+        AutoRepairConfiguration:
+          ActionsStatus: ENABLED
+        PropagateTags: CAPACITY_PROVIDER
+        InstanceLaunchTemplate:
+          Ec2InstanceProfileArn: !GetAtt ECSInstanceProfile.Arn
+          NetworkConfiguration:
+            Subnets:
+              - !Ref PrivateSubnetA
+              - !Ref PrivateSubnetB
+            SecurityGroups:
+              - !Ref ECSInstanceSecurityGroup
+          InstanceRequirements:
+            VCpuCount:
+              Min: 4
+            MemoryMiB:
+              Min: 16384
+            AcceleratorTypes:
+              - gpu
+            AcceleratorManufacturers:
+              - nvidia
+            AcceleratorCount:
+              Min: 1
+            AllowedInstanceTypes:
+              - g6e.xlarge
+              - g6e.2xlarge
+      Tags:
+        - Key: Name
+          Value: !Sub 'gpu-inference-${AWS::StackName}-capacity'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # Associate Capacity Provider with ECS Cluster
+  ClusterCapacityProviderAssociation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    Properties:
+      Cluster: !Ref ECSCluster
+      CapacityProviders:
+        - !Ref GPUCapacityProvider
+        - !Ref LargeGPUCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: !Ref GPUCapacityProvider
+          Weight: 1
+          Base: 0
+
+  #############################################
+  # SQS Queues
+  #############################################
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-dlq'
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-dlq'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  RequestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-request-queue'
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-request-queue'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  LargeModelRequestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-large-request-queue'
+      VisibilityTimeout: 600
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-request-queue'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # Router Lambda + API Gateway
+  #############################################
+
+  RouterLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-router-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RouterSQSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - !GetAtt RequestQueue.Arn
+                  - !GetAtt LargeModelRequestQueue.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Custom/ECSInference
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-router-lambda-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  RouterLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-router'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt RouterLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          SMALL_QUEUE_URL: !Ref RequestQueue
+          LARGE_QUEUE_URL: !Ref LargeModelRequestQueue
+          PROMPT_LENGTH_THRESHOLD: !Ref PromptComplexityThreshold
+          MAX_TOKENS_THRESHOLD: !Ref MaxTokensComplexityThreshold
+          BEDROCK_MODEL_ID: 'amazon.nova-micro-v1:0'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          sqs = boto3.client("sqs")
+          cw = boto3.client("cloudwatch")
+          bedrock = boto3.client("bedrock-runtime")
+
+          SMALL_QUEUE = os.environ["SMALL_QUEUE_URL"]
+          LARGE_QUEUE = os.environ["LARGE_QUEUE_URL"]
+          PROMPT_THRESH = int(os.environ["PROMPT_LENGTH_THRESHOLD"])
+          TOKENS_THRESH = int(os.environ["MAX_TOKENS_THRESHOLD"])
+          BEDROCK_MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
+
+          # Ambiguous zone: heuristics are uncertain, use Bedrock
+          AMBIGUOUS_MIN = 500
+          AMBIGUOUS_MAX = PROMPT_THRESH
+
+          def classify_with_bedrock(prompt):
+              """Ask a small Bedrock model whether the prompt needs the large tier."""
+              payload = {
+                  "messages": [{
+                      "role": "user",
+                      "content": (
+                          "Classify this AI inference request as 'small' (simple factual lookup, "
+                          "short answer, basic summary) or 'large' (complex reasoning, multi-step "
+                          "analysis, code generation, creative writing, or nuanced judgment).\n\n"
+                          f"Request: {prompt[:500]}\n\n"
+                          "Reply with exactly one word: small or large."
+                      )
+                  }],
+                  "inferenceConfig": {"maxTokens": 10, "temperature": 0},
+              }
+              try:
+                  resp = bedrock.invoke_model(
+                      modelId=BEDROCK_MODEL_ID,
+                      body=json.dumps(payload),
+                      contentType="application/json",
+                      accept="application/json",
+                  )
+                  result = json.loads(resp["body"].read())
+                  answer = result["output"]["message"]["content"][0]["text"].strip().lower()
+                  tier = "large" if "large" in answer else "small"
+                  logger.info("Bedrock classifier: %s → %s", prompt[:60], tier)
+                  return tier
+              except Exception as e:
+                  logger.warning("Bedrock classify failed (%s), defaulting to small", e)
+                  return "small"
+
+          def classify(body):
+              prompt = body.get("prompt", "")
+              max_tokens = body.get("maxTokens", 256)
+              route = body.get("route", "")
+              # Explicit overrides always win
+              if route == "large":
+                  return "large"
+              if route == "small":
+                  return "small"
+              # Clear-cut cases: don't pay for Bedrock
+              if len(prompt) > PROMPT_THRESH:
+                  return "large"
+              if max_tokens > TOKENS_THRESH:
+                  return "large"
+              # Ambiguous zone: prompt is medium-length, tokens within threshold
+              if AMBIGUOUS_MIN < len(prompt) <= AMBIGUOUS_MAX:
+                  return classify_with_bedrock(prompt)
+              return "small"
+
+          def handler(event, context):
+              try:
+                  body = json.loads(event.get("body", "{}"))
+              except (json.JSONDecodeError, TypeError):
+                  return {"statusCode": 400, "body": json.dumps({"error": "Invalid JSON"})}
+
+              tier = classify(body)
+              queue_url = LARGE_QUEUE if tier == "large" else SMALL_QUEUE
+
+              sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(body))
+
+              cw.put_metric_data(
+                  Namespace="Custom/ECSInference",
+                  MetricData=[{
+                      "MetricName": "RoutedRequests",
+                      "Value": 1,
+                      "Unit": "Count",
+                      "Dimensions": [{"Name": "Tier", "Value": tier}],
+                  }],
+              )
+
+              logger.info("Routed requestId=%s to %s tier", body.get("requestId", "?"), tier)
+              return {
+                  "statusCode": 202,
+                  "body": json.dumps({"requestId": body.get("requestId"), "tier": tier}),
+              }
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-router'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  InferenceApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-inference-api'
+      ProtocolType: HTTP
+      Tags:
+        Project: !Ref CostAllocationTagProject
+
+  InferenceApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref InferenceApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt RouterLambdaFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  InferenceApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref InferenceApi
+      RouteKey: 'POST /infer'
+      Target: !Sub 'integrations/${InferenceApiIntegration}'
+
+  InferenceApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref InferenceApi
+      StageName: '$default'
+      AutoDeploy: true
+      Tags:
+        Project: !Ref CostAllocationTagProject
+
+  RouterLambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RouterLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${InferenceApi}/*'
+
+  #############################################
+  # ECR Repository
+  #############################################
+
+  InferenceECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${AWS::StackName}-inference'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 5 tagged images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["v"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Remove untagged images older than 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-inference'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # CloudWatch Log Group
+  #############################################
+
+  InferenceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/gpu-inference'
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-inference-logs'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # ECS Task Definition
+  #############################################
+
+  GPUInferenceTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: gpu-inference-task
+      RequiresCompatibilities:
+        - EC2
+        - MANAGED_INSTANCES
+      NetworkMode: awsvpc
+      Cpu: '4096'
+      Memory: '16384'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: vllm-inference
+          Image: !Sub '${InferenceECRRepository.RepositoryUri}:latest'
+          Essential: true
+          ResourceRequirements:
+            - Type: GPU
+              Value: '1'
+          Environment:
+            - Name: MODEL_NAME
+              Value: !Ref ModelName
+            - Name: MODEL_S3_PATH
+              Value: !Ref ModelS3Path
+            - Name: SERVED_MODEL_NAME
+              Value: !Ref ModelName
+            - Name: QUANTIZATION
+              Value: !Ref QuantizationMethod
+            - Name: MAX_SEQ_LEN
+              Value: !Ref MaxSequenceLength
+            - Name: GPU_MEM_UTIL
+              Value: '0.90'
+            - Name: TP_SIZE
+              Value: '1'
+            - Name: REQUEST_QUEUE_URL
+              Value: !Ref RequestQueue
+            - Name: DLQ_URL
+              Value: !Ref DeadLetterQueue
+            - Name: OUTPUT_DESTINATION
+              Value: !Ref OutputDestination
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref InferenceLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: gpu-inference
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8000/health || exit 1
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-gpu-inference-task'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # ECS Service
+  #############################################
+
+  GPUInferenceService:
+    Type: AWS::ECS::Service
+    DependsOn: ClusterCapacityProviderAssociation
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-inference-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref GPUInferenceTaskDefinition
+      DesiredCount: !Ref MinTaskCount
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 600
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref GPUCapacityProvider
+          Weight: 1
+          Base: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnetA
+            - !Ref PrivateSubnetB
+          SecurityGroups:
+            - !Ref ECSInstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-inference-service'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # Large Model - Capacity Provider, Task, Service
+  #############################################
+
+  LargeGPUCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      Name: !Sub 'large-gpu-${AWS::StackName}-capacity'
+      ClusterName: !Ref ECSCluster
+      ManagedInstancesProvider:
+        InfrastructureRoleArn: !GetAtt ECSInfrastructureRole.Arn
+        AutoRepairConfiguration:
+          ActionsStatus: ENABLED
+        PropagateTags: CAPACITY_PROVIDER
+        InstanceLaunchTemplate:
+          Ec2InstanceProfileArn: !GetAtt ECSInstanceProfile.Arn
+          NetworkConfiguration:
+            Subnets:
+              - !Ref PrivateSubnetA
+              - !Ref PrivateSubnetB
+            SecurityGroups:
+              - !Ref ECSInstanceSecurityGroup
+          InstanceRequirements:
+            VCpuCount:
+              Min: 192
+            MemoryMiB:
+              Min: 786432
+            AcceleratorTypes:
+              - gpu
+            AcceleratorManufacturers:
+              - nvidia
+            AcceleratorCount:
+              Min: 8
+            AllowedInstanceTypes:
+              - g6e.48xlarge
+      Tags:
+        - Key: Name
+          Value: !Sub 'large-gpu-${AWS::StackName}-capacity'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  LargeModelLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/large-gpu-inference'
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-inference-logs'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  LargeGPUInferenceTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: large-gpu-inference-task
+      RequiresCompatibilities:
+        - EC2
+        - MANAGED_INSTANCES
+      NetworkMode: awsvpc
+      Cpu: '32768'
+      Memory: '131072'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt LargeModelTaskRole.Arn
+      ContainerDefinitions:
+        - Name: vllm-large-inference
+          Image: !Sub '${InferenceECRRepository.RepositoryUri}:latest'
+          Essential: true
+          ResourceRequirements:
+            - Type: GPU
+              Value: !Ref LargeModelGPUCount
+          Environment:
+            - Name: MODEL_NAME
+              Value: !Ref LargeModelName
+            - Name: MODEL_S3_PATH
+              Value: !Ref LargeModelS3Path
+            - Name: SERVED_MODEL_NAME
+              Value: !Ref LargeModelName
+            - Name: QUANTIZATION
+              Value: !Ref LargeModelQuantization
+            - Name: MAX_SEQ_LEN
+              Value: !Ref LargeModelMaxSequenceLength
+            - Name: GPU_MEM_UTIL
+              Value: '0.90'
+            - Name: TP_SIZE
+              Value: !Ref LargeModelGPUCount
+            - Name: REQUEST_QUEUE_URL
+              Value: !Ref LargeModelRequestQueue
+            - Name: DLQ_URL
+              Value: !Ref DeadLetterQueue
+            - Name: OUTPUT_DESTINATION
+              Value: !Ref OutputDestination
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LargeModelLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: large-gpu-inference
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:8000/health || exit 1
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-gpu-inference-task'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  LargeGPUInferenceService:
+    Type: AWS::ECS::Service
+    DependsOn: ClusterCapacityProviderAssociation
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-large-inference-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref LargeGPUInferenceTaskDefinition
+      DesiredCount: !Ref LargeModelMinTaskCount
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 1200
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref LargeGPUCapacityProvider
+          Weight: 1
+          Base: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnetA
+            - !Ref PrivateSubnetB
+          SecurityGroups:
+            - !Ref ECSInstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-inference-service'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
+  # Scaling Metric Lambda
+  #############################################
+
+  ScalingMetricLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-scaling-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ScalingMetricPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SQSGetQueueAttributes
+                Effect: Allow
+                Action:
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt RequestQueue.Arn
+                  - !GetAtt LargeModelRequestQueue.Arn
+              - Sid: CloudWatchGetMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                Resource: '*'
+              - Sid: CloudWatchPutMetricData
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Custom/ECSInference
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-scaling-lambda-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  ScalingMetricLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-scaling-metric'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ScalingMetricLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref RequestQueue
+          QUEUE_DEPTH_THRESHOLD: !Ref QueueDepthScaleThreshold
+          CLUSTER_NAME: !Sub '${AWS::StackName}-cluster'
+          SERVICE_NAME: !Sub '${AWS::StackName}-inference-service'
+      Code:
+        ZipFile: |
+          import os
+          import logging
+          from datetime import datetime, timedelta, timezone
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          sqs_client = boto3.client("sqs")
+          cloudwatch_client = boto3.client("cloudwatch")
+
+          METRIC_NAMESPACE = "Custom/ECSInference"
+          METRIC_NAME = "InferenceScalingMetric"
+
+          def compute_metric(queue_depth, gpu_memory_utilization, queue_depth_threshold):
+              value = max(queue_depth / queue_depth_threshold, gpu_memory_utilization / 80)
+              return max(value, 0.0)
+
+          def _get_queue_depth(queue_url):
+              response = sqs_client.get_queue_attributes(
+                  QueueUrl=queue_url,
+                  AttributeNames=["ApproximateNumberOfMessages"],
+              )
+              return int(response["Attributes"]["ApproximateNumberOfMessages"])
+
+          def _get_gpu_memory_utilization(cluster_name, service_name):
+              now = datetime.now(timezone.utc)
+              response = cloudwatch_client.get_metric_statistics(
+                  Namespace="ECS/ContainerInsights",
+                  MetricName="TaskGPUMemoryUtilization",
+                  Dimensions=[
+                      {"Name": "ClusterName", "Value": cluster_name},
+                      {"Name": "ServiceName", "Value": service_name},
+                  ],
+                  StartTime=now - timedelta(minutes=5),
+                  EndTime=now,
+                  Period=60,
+                  Statistics=["Average"],
+              )
+              datapoints = response.get("Datapoints", [])
+              if not datapoints:
+                  logger.info("No GPU memory utilization data – defaulting to 0.0")
+                  return 0.0
+              latest = max(datapoints, key=lambda dp: dp["Timestamp"])
+              return latest["Average"]
+
+          def _publish_metric(value, cluster_name, service_name):
+              cloudwatch_client.put_metric_data(
+                  Namespace=METRIC_NAMESPACE,
+                  MetricData=[{
+                      "MetricName": METRIC_NAME,
+                      "Value": value,
+                      "Unit": "None",
+                      "Dimensions": [
+                          {"Name": "ClusterName", "Value": cluster_name},
+                          {"Name": "ServiceName", "Value": service_name},
+                      ],
+                  }],
+              )
+
+          def handler(event, context):
+              queue_url = os.environ["QUEUE_URL"]
+              queue_depth_threshold = int(os.environ["QUEUE_DEPTH_THRESHOLD"])
+              cluster_name = os.environ["CLUSTER_NAME"]
+              service_name = os.environ["SERVICE_NAME"]
+              queue_depth = _get_queue_depth(queue_url)
+              gpu_utilization = _get_gpu_memory_utilization(cluster_name, service_name)
+              metric_value = compute_metric(queue_depth, gpu_utilization, queue_depth_threshold)
+              logger.info("queue_depth=%d gpu_utilization=%.2f threshold=%d metric=%.4f",
+                          queue_depth, gpu_utilization, queue_depth_threshold, metric_value)
+              _publish_metric(metric_value, cluster_name, service_name)
+              return {"metricValue": metric_value}
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-scaling-metric'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  ScalingMetricScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-scaling-metric-schedule'
+      Description: Triggers scaling metric Lambda every 60 seconds
+      ScheduleExpression: 'rate(1 minute)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ScalingMetricLambdaFunction.Arn
+          Id: ScalingMetricLambdaTarget
+
+  ScalingMetricLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ScalingMetricLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScalingMetricScheduleRule.Arn
+
+  #############################################
+  # Application Auto Scaling
+  #############################################
+
+  ECSScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref MaxTaskCount
+      MinCapacity: !Ref MinTaskCount
+      ResourceId: !Sub 'service/${ECSCluster}/${GPUInferenceService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ScaleOutPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-scale-out'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ECSScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 120
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+
+  ScaleInPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-scale-in'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ECSScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: !Ref ScaleDownCooldownSeconds
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  #############################################
+  # CloudWatch Alarms for Scaling Policies
+  #############################################
+
+  ScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-scale-out-alarm'
+      AlarmDescription: Triggers scale-out when InferenceScalingMetric exceeds 1.0
+      Namespace: Custom/ECSInference
+      MetricName: InferenceScalingMetric
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+        - Name: ServiceName
+          Value: !Sub '${AWS::StackName}-inference-service'
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1.0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ScaleOutPolicy
+
+  ScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-scale-in-alarm'
+      AlarmDescription: Triggers scale-in when InferenceScalingMetric is below 0.1 for 5 minutes
+      Namespace: Custom/ECSInference
+      MetricName: InferenceScalingMetric
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+        - Name: ServiceName
+          Value: !Sub '${AWS::StackName}-inference-service'
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 0.1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref ScaleInPolicy
+
+  #############################################
+  # Large Model - Scaling Metric Lambda
+  #############################################
+
+  LargeScalingMetricLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-large-scaling-metric'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ScalingMetricLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref LargeModelRequestQueue
+          QUEUE_DEPTH_THRESHOLD: !Ref QueueDepthScaleThreshold
+          CLUSTER_NAME: !Sub '${AWS::StackName}-cluster'
+          SERVICE_NAME: !Sub '${AWS::StackName}-large-inference-service'
+      Code:
+        ZipFile: |
+          import os
+          import logging
+          from datetime import datetime, timedelta, timezone
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          sqs_client = boto3.client("sqs")
+          cloudwatch_client = boto3.client("cloudwatch")
+
+          METRIC_NAMESPACE = "Custom/ECSInference"
+          METRIC_NAME = "InferenceScalingMetric"
+
+          def compute_metric(queue_depth, gpu_memory_utilization, queue_depth_threshold):
+              value = max(queue_depth / queue_depth_threshold, gpu_memory_utilization / 80)
+              return max(value, 0.0)
+
+          def _get_queue_depth(queue_url):
+              response = sqs_client.get_queue_attributes(
+                  QueueUrl=queue_url,
+                  AttributeNames=["ApproximateNumberOfMessages"],
+              )
+              return int(response["Attributes"]["ApproximateNumberOfMessages"])
+
+          def _get_gpu_memory_utilization(cluster_name, service_name):
+              now = datetime.now(timezone.utc)
+              response = cloudwatch_client.get_metric_statistics(
+                  Namespace="ECS/ContainerInsights",
+                  MetricName="TaskGPUMemoryUtilization",
+                  Dimensions=[
+                      {"Name": "ClusterName", "Value": cluster_name},
+                      {"Name": "ServiceName", "Value": service_name},
+                  ],
+                  StartTime=now - timedelta(minutes=5),
+                  EndTime=now,
+                  Period=60,
+                  Statistics=["Average"],
+              )
+              datapoints = response.get("Datapoints", [])
+              if not datapoints:
+                  logger.info("No GPU memory utilization data – defaulting to 0.0")
+                  return 0.0
+              latest = max(datapoints, key=lambda dp: dp["Timestamp"])
+              return latest["Average"]
+
+          def _publish_metric(value, cluster_name, service_name):
+              cloudwatch_client.put_metric_data(
+                  Namespace=METRIC_NAMESPACE,
+                  MetricData=[{
+                      "MetricName": METRIC_NAME,
+                      "Value": value,
+                      "Unit": "None",
+                      "Dimensions": [
+                          {"Name": "ClusterName", "Value": cluster_name},
+                          {"Name": "ServiceName", "Value": service_name},
+                      ],
+                  }],
+              )
+
+          def handler(event, context):
+              queue_url = os.environ["QUEUE_URL"]
+              queue_depth_threshold = int(os.environ["QUEUE_DEPTH_THRESHOLD"])
+              cluster_name = os.environ["CLUSTER_NAME"]
+              service_name = os.environ["SERVICE_NAME"]
+              queue_depth = _get_queue_depth(queue_url)
+              gpu_utilization = _get_gpu_memory_utilization(cluster_name, service_name)
+              metric_value = compute_metric(queue_depth, gpu_utilization, queue_depth_threshold)
+              logger.info("queue_depth=%d gpu_utilization=%.2f threshold=%d metric=%.4f",
+                          queue_depth, gpu_utilization, queue_depth_threshold, metric_value)
+              _publish_metric(metric_value, cluster_name, service_name)
+              return {"metricValue": metric_value}
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-large-scaling-metric'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  LargeScalingMetricScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-large-scaling-schedule'
+      Description: Triggers large-model scaling metric Lambda every 60 seconds
+      ScheduleExpression: 'rate(1 minute)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LargeScalingMetricLambdaFunction.Arn
+          Id: LargeScalingMetricTarget
+
+  LargeScalingMetricLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LargeScalingMetricLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt LargeScalingMetricScheduleRule.Arn
+
+  #############################################
+  # Large Model - Auto Scaling
+  #############################################
+
+  LargeECSScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !Ref LargeModelMaxTaskCount
+      MinCapacity: !Ref LargeModelMinTaskCount
+      ResourceId: !Sub 'service/${ECSCluster}/${LargeGPUInferenceService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  LargeScaleOutPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-large-scale-out'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref LargeECSScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 180
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+
+  LargeScaleInPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-large-scale-in'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref LargeECSScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 600
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  LargeScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-large-scale-out-alarm'
+      AlarmDescription: Triggers large-model scale-out when metric exceeds 1.0
+      Namespace: Custom/ECSInference
+      MetricName: InferenceScalingMetric
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+        - Name: ServiceName
+          Value: !Sub '${AWS::StackName}-large-inference-service'
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1.0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref LargeScaleOutPolicy
+
+  LargeScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-large-scale-in-alarm'
+      AlarmDescription: Triggers large-model scale-in when metric below 0.1 for 10 min
+      Namespace: Custom/ECSInference
+      MetricName: InferenceScalingMetric
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+        - Name: ServiceName
+          Value: !Sub '${AWS::StackName}-large-inference-service'
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 10
+      Threshold: 0.1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref LargeScaleInPolicy
+
+  #############################################
+  # Observability - SNS Topic, Dashboard, Alarms
+  #############################################
+
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-alarm-notifications'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-alarm-notifications'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  GPUInferenceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-gpu-inference'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0, "y": 0, "width": 24, "height": 1,
+              "properties": { "markdown": "## Routing" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 1, "width": 12, "height": 6,
+              "properties": {
+                "title": "Routed Requests by Tier",
+                "metrics": [
+                  [ "Custom/ECSInference", "RoutedRequests", "Tier", "small", { "stat": "Sum", "period": 60, "label": "Small Tier" } ],
+                  [ "Custom/ECSInference", "RoutedRequests", "Tier", "large", { "stat": "Sum", "period": 60, "label": "Large Tier" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "Requests" } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 1, "width": 12, "height": 6,
+              "properties": {
+                "title": "SQS Queue Depth - Both Tiers",
+                "metrics": [
+                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${RequestQueue.QueueName}", { "stat": "Average", "period": 60, "label": "Small Queue" } ],
+                  [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${LargeModelRequestQueue.QueueName}", { "stat": "Average", "period": 60, "label": "Large Queue" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "Messages" } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 7, "width": 24, "height": 1,
+              "properties": { "markdown": "## Small Model Tier (${GPUInferenceService.Name})" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "Small - GPU Memory Utilization (%)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUMemoryUtilization", "ClusterName", "${ECSCluster}", "ServiceName", "${GPUInferenceService.Name}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "Small - Desired vs Running Tasks",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "DesiredTaskCount", "ClusterName", "${ECSCluster}", "ServiceName", "${GPUInferenceService.Name}", { "stat": "Average", "period": 60 } ],
+                  [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${ECSCluster}", "ServiceName", "${GPUInferenceService.Name}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 8, "width": 8, "height": 6,
+              "properties": {
+                "title": "Small - Inference Latency",
+                "metrics": [
+                  [ "Custom/ECSInference", "InferenceLatency", "ClusterName", "${ECSCluster}", "ServiceName", "${GPUInferenceService.Name}", { "stat": "p50", "period": 60, "label": "p50" } ],
+                  [ "...", { "stat": "p95", "period": 60, "label": "p95" } ],
+                  [ "...", { "stat": "p99", "period": 60, "label": "p99" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "ms" } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 14, "width": 24, "height": 1,
+              "properties": { "markdown": "## Large Model Tier (${LargeGPUInferenceService.Name})" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "Large - GPU Memory Utilization (%)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUMemoryUtilization", "ClusterName", "${ECSCluster}", "ServiceName", "${LargeGPUInferenceService.Name}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "Large - Desired vs Running Tasks",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "DesiredTaskCount", "ClusterName", "${ECSCluster}", "ServiceName", "${LargeGPUInferenceService.Name}", { "stat": "Average", "period": 60 } ],
+                  [ "ECS/ContainerInsights", "RunningTaskCount", "ClusterName", "${ECSCluster}", "ServiceName", "${LargeGPUInferenceService.Name}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 15, "width": 8, "height": 6,
+              "properties": {
+                "title": "Large - Inference Latency",
+                "metrics": [
+                  [ "Custom/ECSInference", "InferenceLatency", "ClusterName", "${ECSCluster}", "ServiceName", "${LargeGPUInferenceService.Name}", { "stat": "p50", "period": 60, "label": "p50" } ],
+                  [ "...", { "stat": "p95", "period": 60, "label": "p95" } ],
+                  [ "...", { "stat": "p99", "period": 60, "label": "p99" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "ms" } }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0, "y": 21, "width": 24, "height": 1,
+              "properties": { "markdown": "## GPU Hardware (NVIDIA DCGM via Container Insights)" }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "GPU Utilization (%)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUUtilization", "ClusterName", "${ECSCluster}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "max": 100 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "GPU Temperature (°C)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUTemperature", "ClusterName", "${ECSCluster}", { "stat": "Maximum", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0 } },
+                "annotations": { "horizontal": [{ "label": "Critical (90°C)", "value": 90, "color": "#d13212" }] }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "GPU Power Draw (W)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUPowerDraw", "ClusterName", "${ECSCluster}", { "stat": "Average", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18, "y": 22, "width": 6, "height": 6,
+              "properties": {
+                "title": "GPU XID Errors (Restart App)",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPURestartAppXidCount", "ClusterName", "${ECSCluster}", { "stat": "Sum", "period": 60 } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0 } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 28, "width": 12, "height": 6,
+              "properties": {
+                "title": "GPU VRAM Used (Bytes) by Service",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskGPUMemoryUsed", "ClusterName", "${ECSCluster}", "ServiceName", "${GPUInferenceService.Name}", { "stat": "Average", "period": 60, "label": "Small Tier" } ],
+                  [ "ECS/ContainerInsights", "TaskGPUMemoryUsed", "ClusterName", "${ECSCluster}", "ServiceName", "${LargeGPUInferenceService.Name}", { "stat": "Average", "period": 60, "label": "Large Tier" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "Bytes" } }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 28, "width": 12, "height": 6,
+              "properties": {
+                "title": "Instance GPU Allocation",
+                "metrics": [
+                  [ "ECS/ContainerInsights", "InstanceGPULimit", "ClusterName", "${ECSCluster}", { "stat": "Sum", "period": 60, "label": "Total GPUs" } ],
+                  [ "ECS/ContainerInsights", "InstanceGPUUsageTotal", "ClusterName", "${ECSCluster}", { "stat": "Sum", "period": 60, "label": "Allocated GPUs" } ]
+                ],
+                "view": "timeSeries",
+                "region": "${AWS::Region}",
+                "yAxis": { "left": { "min": 0, "label": "GPUs" } }
+              }
+            }
+          ]
+        }
+
+  GPUTemperatureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-gpu-temperature-alarm'
+      AlarmDescription: Triggers when GPU temperature exceeds 90°C on any task
+      Namespace: ECS/ContainerInsights
+      MetricName: TaskGPUTemperature
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 90
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+
+  GPUXidErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-gpu-xid-error-alarm'
+      AlarmDescription: Triggers when NVIDIA XID restart-app errors are detected on any task
+      Namespace: ECS/ContainerInsights
+      MetricName: TaskGPURestartAppXidCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Sub '${AWS::StackName}-cluster'
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+
+  DLQDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-dlq-depth-alarm'
+      AlarmDescription: Triggers when DLQ message count exceeds 0
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeadLetterQueue.QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+
+Outputs:
+  ClusterArn:
+    Description: ECS Cluster ARN for service deployments
+    Value: !GetAtt ECSCluster.Arn
+
+  InferenceApiUrl:
+    Description: API Gateway URL for submitting inference requests
+    Value: !Sub 'https://${InferenceApi}.execute-api.${AWS::Region}.amazonaws.com/infer'
+
+  RequestQueueUrl:
+    Description: SQS Queue URL for small-model requests (direct access)
+    Value: !Ref RequestQueue
+
+  RequestQueueArn:
+    Description: SQS Queue ARN for small-model IAM policy references
+    Value: !GetAtt RequestQueue.Arn
+
+  LargeModelRequestQueueUrl:
+    Description: SQS Queue URL for large-model requests (direct access)
+    Value: !Ref LargeModelRequestQueue
+
+  LargeModelRequestQueueArn:
+    Description: SQS Queue ARN for large-model IAM policy references
+    Value: !GetAtt LargeModelRequestQueue.Arn
+
+  ECRRepositoryUri:
+    Description: ECR Repository URI for image push/pull
+    Value: !GetAtt InferenceECRRepository.RepositoryUri
+
+  DashboardUrl:
+    Description: CloudWatch Dashboard URL for monitoring
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${GPUInferenceDashboard}'
+
+  SmallModelTaskDefinitionArn:
+    Description: Small-model Task Definition ARN
+    Value: !Ref GPUInferenceTaskDefinition
+
+  LargeModelTaskDefinitionArn:
+    Description: Large-model Task Definition ARN
+    Value: !Ref LargeGPUInferenceTaskDefinition
+
+  SmallModelServiceName:
+    Description: Small-model ECS Service name
+    Value: !GetAtt GPUInferenceService.Name
+
+  LargeModelServiceName:
+    Description: Large-model ECS Service name
+    Value: !GetAtt LargeGPUInferenceService.Name
