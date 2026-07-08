@@ -79,3 +79,123 @@ class TestCompositeScalingMetricProperty:
             f"compute_metric({queue_depth}, {gpu_memory_utilization}, {queue_depth_threshold}) "
             f"returned {result}, which is negative"
         )
+
+
+# --- Scaling Lambda Handler Tests ---
+
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+import importlib
+
+import scaling_metric_lambda
+
+
+class TestScalingLambdaHandler:
+    """
+    Tests for the scaling_metric_lambda handler, GPU metric fetching, and publishing.
+
+    Validates: Requirements FR-2
+    """
+
+    def _make_env(self):
+        return {
+            "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123/req-queue",
+            "QUEUE_DEPTH_THRESHOLD": "5",
+            "CLUSTER_NAME": "test-cluster",
+            "SERVICE_NAME": "test-service",
+        }
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    @patch("scaling_metric_lambda.sqs_client")
+    def test_handler_returns_metric_value(self, mock_sqs, mock_cw):
+        """handler() must return a dict with metricValue key."""
+        mock_sqs.get_queue_attributes.return_value = {
+            "Attributes": {"ApproximateNumberOfMessages": "10"}
+        }
+        mock_cw.get_metric_statistics.return_value = {"Datapoints": []}
+        mock_cw.put_metric_data.return_value = {}
+
+        with patch.dict("os.environ", self._make_env()):
+            result = scaling_metric_lambda.handler({}, None)
+
+        assert "metricValue" in result
+        assert isinstance(result["metricValue"], float)
+        assert result["metricValue"] >= 0.0
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    @patch("scaling_metric_lambda.sqs_client")
+    def test_handler_calls_publish_metric(self, mock_sqs, mock_cw):
+        """handler() must call put_metric_data exactly once."""
+        mock_sqs.get_queue_attributes.return_value = {
+            "Attributes": {"ApproximateNumberOfMessages": "3"}
+        }
+        mock_cw.get_metric_statistics.return_value = {"Datapoints": []}
+        mock_cw.put_metric_data.return_value = {}
+
+        with patch.dict("os.environ", self._make_env()):
+            scaling_metric_lambda.handler({}, None)
+
+        mock_cw.put_metric_data.assert_called_once()
+        call_kwargs = mock_cw.put_metric_data.call_args[1]
+        assert call_kwargs["Namespace"] == "Custom/ECSInference"
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    def test_get_gpu_memory_utilization_no_datapoints_returns_zero(self, mock_cw):
+        """_get_gpu_memory_utilization() must return 0.0 when Datapoints is empty."""
+        mock_cw.get_metric_statistics.return_value = {"Datapoints": []}
+
+        result = scaling_metric_lambda._get_gpu_memory_utilization("cluster", "service")
+
+        assert result == 0.0
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    def test_get_gpu_memory_utilization_returns_latest_datapoint(self, mock_cw):
+        """_get_gpu_memory_utilization() must return the most recent datapoint, not the first."""
+        t1 = datetime(2026, 7, 8, 0, 0, 0, tzinfo=timezone.utc)
+        t2 = datetime(2026, 7, 8, 0, 1, 0, tzinfo=timezone.utc)  # later
+        t3 = datetime(2026, 7, 8, 0, 0, 30, tzinfo=timezone.utc)
+
+        mock_cw.get_metric_statistics.return_value = {
+            "Datapoints": [
+                {"Timestamp": t1, "Average": 30.0},
+                {"Timestamp": t2, "Average": 75.0},  # latest — should be returned
+                {"Timestamp": t3, "Average": 50.0},
+            ]
+        }
+
+        result = scaling_metric_lambda._get_gpu_memory_utilization("cluster", "service")
+
+        assert result == 75.0, f"Expected 75.0 (latest datapoint), got {result}"
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    @patch("scaling_metric_lambda.sqs_client")
+    def test_handler_missing_env_var_raises(self, mock_sqs, mock_cw):
+        """handler() must raise KeyError when QUEUE_URL env var is missing."""
+        import os
+        env_without_queue = {k: v for k, v in self._make_env().items() if k != "QUEUE_URL"}
+
+        with patch.dict("os.environ", env_without_queue, clear=False):
+            # Remove QUEUE_URL if present from environment
+            with patch.object(os, "environ", {**os.environ, **env_without_queue}):
+                # Directly test that missing key raises
+                import os as real_os
+                saved = real_os.environ.pop("QUEUE_URL", None)
+                try:
+                    with pytest.raises(KeyError):
+                        scaling_metric_lambda.handler({}, None)
+                finally:
+                    if saved is not None:
+                        real_os.environ["QUEUE_URL"] = saved
+
+    @patch("scaling_metric_lambda.cloudwatch_client")
+    def test_get_gpu_uses_correct_metric_name(self, mock_cw):
+        """_get_gpu_memory_utilization() must query TaskGPUMemoryUtilization (not GPUMemoryUtilization)."""
+        mock_cw.get_metric_statistics.return_value = {"Datapoints": []}
+
+        scaling_metric_lambda._get_gpu_memory_utilization("cluster", "service")
+
+        call_kwargs = mock_cw.get_metric_statistics.call_args[1]
+        assert call_kwargs["MetricName"] == "TaskGPUMemoryUtilization", (
+            f"Expected MetricName='TaskGPUMemoryUtilization', got '{call_kwargs['MetricName']}'. "
+            "This metric name must match ECS Container Insights Enhanced."
+        )

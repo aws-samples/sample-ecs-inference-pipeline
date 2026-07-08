@@ -287,3 +287,69 @@ class TestModelS3PathPassthroughProperty:
             f"For S3 URI '{s3_uri}', entrypoint.sh does not contain 'exit 1' "
             f"for S3 download failure handling"
         )
+
+
+class TestEntrypointFailurePaths:
+    """
+    Tests for vLLM startup failure handling in entrypoint.sh.
+
+    Validates: Requirements FR-5
+    """
+
+    def test_entrypoint_exits_on_vllm_startup_timeout(self):
+        """
+        entrypoint.sh must exit non-zero when the vLLM health check does not succeed
+        within MAX_RETRIES attempts (startup timeout path).
+
+        The script checks the health endpoint in a loop up to MAX_RETRIES times.
+        If it never succeeds, it must exit 1 with an error message.
+        """
+        script = load_entrypoint()
+
+        # Verify a retry loop exists with a maximum attempt limit
+        has_retry_loop = (
+            "MAX_RETRIES" in script or "max_retries" in script.lower()
+        )
+        assert has_retry_loop, (
+            "entrypoint.sh must define a MAX_RETRIES limit for the vLLM health check loop"
+        )
+
+        # Verify the script exits non-zero after the loop exhausts retries
+        # The pattern is: check after the loop whether vLLM is still not ready
+        has_post_loop_exit = (
+            "failed to become ready" in script.lower()
+            or ("exit 1" in script and "MAX_RETRIES" in script)
+        )
+        assert has_post_loop_exit, (
+            "entrypoint.sh must exit 1 with an error message when vLLM fails to "
+            "become ready within MAX_RETRIES attempts"
+        )
+
+    def test_entrypoint_exits_on_vllm_process_unexpected_exit(self):
+        """
+        entrypoint.sh must detect when the vLLM server process exits unexpectedly
+        during the startup wait loop and exit non-zero.
+
+        The script must check whether the vLLM PID is still alive (kill -0) during
+        the retry loop. If the process is gone, it must exit 1.
+        """
+        script = load_entrypoint()
+
+        # Verify the script checks whether the vLLM process is still alive
+        has_process_alive_check = (
+            "kill -0" in script and "VLLM_PID" in script
+        )
+        assert has_process_alive_check, (
+            "entrypoint.sh must check that the vLLM process (VLLM_PID) is still "
+            "alive during the health check loop using 'kill -0 $VLLM_PID'"
+        )
+
+        # Verify there's an exit 1 on process death
+        has_exit_on_process_death = (
+            "exited unexpectedly" in script.lower()
+            or ("exit 1" in script and "VLLM_PID" in script)
+        )
+        assert has_exit_on_process_death, (
+            "entrypoint.sh must exit 1 when the vLLM server process exits "
+            "unexpectedly during the startup wait loop"
+        )

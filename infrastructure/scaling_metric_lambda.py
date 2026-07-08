@@ -63,7 +63,7 @@ def _get_gpu_memory_utilization(cluster_name: str, service_name: str) -> float:
     now = datetime.now(timezone.utc)
     response = cloudwatch_client.get_metric_statistics(
         Namespace="ECS/ContainerInsights",
-        MetricName="GPUMemoryUtilization",
+        MetricName="TaskGPUMemoryUtilization",
         Dimensions=[
             {"Name": "ClusterName", "Value": cluster_name},
             {"Name": "ServiceName", "Value": service_name},

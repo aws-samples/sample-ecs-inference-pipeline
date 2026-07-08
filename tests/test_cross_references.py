@@ -746,3 +746,249 @@ class TestGlobalReferenceIntegrity:
         assert len(orphaned) == 0, (
             f"Orphaned IAM roles (not referenced by any resource): {orphaned}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Large Model Tier Cross-References (FR-3)
+# ---------------------------------------------------------------------------
+
+
+def get_large_service_props(template):
+    """Get the LargeGPUInferenceService properties."""
+    svc = get_resource(template, "LargeGPUInferenceService")
+    assert svc is not None, "LargeGPUInferenceService not found in template"
+    return svc.get("Properties", {})
+
+
+def get_large_task_def_props(template):
+    """Get the LargeGPUInferenceTaskDefinition properties."""
+    td = get_resource(template, "LargeGPUInferenceTaskDefinition")
+    assert td is not None, "LargeGPUInferenceTaskDefinition not found in template"
+    return td.get("Properties", {})
+
+
+def get_large_container_def(template):
+    """Get the first container definition from the large task definition."""
+    props = get_large_task_def_props(template)
+    containers = props.get("ContainerDefinitions", [])
+    assert len(containers) > 0, "No container definitions found in large task def"
+    return containers[0]
+
+
+class TestLargeModelServiceCrossReferences:
+    """Large tier: ECS Service -> Task Definition, Capacity Provider, Subnets, Security Groups"""
+
+    def setup_method(self):
+        self.template = load_template()
+        self.resources = get_all_resource_ids(self.template)
+        self.svc_props = get_large_service_props(self.template)
+
+    def test_large_service_references_task_definition(self):
+        """LargeGPUInferenceService TaskDefinition must reference LargeGPUInferenceTaskDefinition."""
+        td_ref = self.svc_props.get("TaskDefinition")
+        assert is_ref(td_ref, "LargeGPUInferenceTaskDefinition"), (
+            f"Large service TaskDefinition should !Ref LargeGPUInferenceTaskDefinition, got {td_ref}"
+        )
+        assert "LargeGPUInferenceTaskDefinition" in self.resources
+
+    def test_large_service_references_capacity_provider(self):
+        """LargeGPUInferenceService CapacityProviderStrategy must reference LargeGPUCapacityProvider."""
+        strategy = self.svc_props.get("CapacityProviderStrategy", [])
+        assert len(strategy) > 0, "Large service must have a CapacityProviderStrategy"
+        cp_ref = strategy[0].get("CapacityProvider")
+        assert is_ref(cp_ref, "LargeGPUCapacityProvider"), (
+            f"Large service CapacityProviderStrategy should !Ref LargeGPUCapacityProvider, got {cp_ref}"
+        )
+        assert "LargeGPUCapacityProvider" in self.resources
+
+    def test_large_service_references_cluster(self):
+        """LargeGPUInferenceService Cluster must reference ECSCluster."""
+        cluster_ref = self.svc_props.get("Cluster")
+        assert is_ref(cluster_ref, "ECSCluster"), (
+            f"Large service Cluster should !Ref ECSCluster, got {cluster_ref}"
+        )
+        assert "ECSCluster" in self.resources
+
+    def test_large_service_references_private_subnets(self):
+        """LargeGPUInferenceService network config must reference both private subnets."""
+        net_config = self.svc_props.get("NetworkConfiguration", {})
+        awsvpc = net_config.get("AwsvpcConfiguration", {})
+        subnets = awsvpc.get("Subnets", [])
+        subnet_targets = {get_ref_target(s) for s in subnets if is_ref(s)}
+        assert "PrivateSubnetA" in subnet_targets, "Large service must reference PrivateSubnetA"
+        assert "PrivateSubnetB" in subnet_targets, "Large service must reference PrivateSubnetB"
+
+    def test_large_service_references_security_group(self):
+        """LargeGPUInferenceService network config must reference a valid security group."""
+        net_config = self.svc_props.get("NetworkConfiguration", {})
+        awsvpc = net_config.get("AwsvpcConfiguration", {})
+        sgs = awsvpc.get("SecurityGroups", [])
+        assert len(sgs) > 0, "Large service must have at least one security group"
+        sg_targets = {get_ref_target(s) for s in sgs if is_ref(s)}
+        for target in sg_targets:
+            assert target in self.resources, (
+                f"Large service security group {target} not found in resources"
+            )
+
+    def test_large_service_assign_public_ip_disabled(self):
+        """LargeGPUInferenceService must have AssignPublicIp=DISABLED."""
+        net_config = self.svc_props.get("NetworkConfiguration", {})
+        awsvpc = net_config.get("AwsvpcConfiguration", {})
+        assign_public = awsvpc.get("AssignPublicIp", "ENABLED")
+        assert assign_public == "DISABLED", (
+            f"Large service AssignPublicIp should be DISABLED, got {assign_public}"
+        )
+
+
+class TestLargeModelTaskDefCrossReferences:
+    """Large tier: Task Definition -> ECR, Queues, Log Group, IAM Roles"""
+
+    def setup_method(self):
+        self.template = load_template()
+        self.resources = get_all_resource_ids(self.template)
+        self.td_props = get_large_task_def_props(self.template)
+        self.container = get_large_container_def(self.template)
+
+    def test_large_task_def_references_execution_role(self):
+        """Large TaskDefinition ExecutionRoleArn must reference ECSTaskExecutionRole."""
+        exec_role = self.td_props.get("ExecutionRoleArn")
+        assert is_getatt(exec_role, "ECSTaskExecutionRole", "Arn"), (
+            f"Large task ExecutionRoleArn should !GetAtt ECSTaskExecutionRole.Arn, got {exec_role}"
+        )
+        assert "ECSTaskExecutionRole" in self.resources
+
+    def test_large_task_def_references_task_role(self):
+        """Large TaskDefinition TaskRoleArn must reference LargeModelTaskRole."""
+        task_role = self.td_props.get("TaskRoleArn")
+        assert is_getatt(task_role, "LargeModelTaskRole", "Arn"), (
+            f"Large task TaskRoleArn should !GetAtt LargeModelTaskRole.Arn, got {task_role}"
+        )
+        assert "LargeModelTaskRole" in self.resources
+
+    def test_large_container_image_references_ecr_repo(self):
+        """Large container image must reference InferenceECRRepository URI."""
+        image = self.container.get("Image")
+        assert image is not None, "Large container Image must be defined"
+        refs, getatts = collect_refs_recursive(image)
+        assert "InferenceECRRepository" in getatts, (
+            f"Large container Image should reference InferenceECRRepository, "
+            f"found refs={refs}, getatts={getatts}"
+        )
+        assert "InferenceECRRepository" in self.resources
+
+    def test_large_env_request_queue_url_references_large_queue(self):
+        """Large container REQUEST_QUEUE_URL env var must reference LargeModelRequestQueue."""
+        val = get_env_var(self.container, "REQUEST_QUEUE_URL")
+        assert val is not None, "REQUEST_QUEUE_URL env var must be defined in large task"
+        assert is_ref(val, "LargeModelRequestQueue"), (
+            f"Large task REQUEST_QUEUE_URL should !Ref LargeModelRequestQueue, got {val}"
+        )
+        assert "LargeModelRequestQueue" in self.resources
+
+    def test_large_env_dlq_url_references_dlq(self):
+        """Large container DLQ_URL env var must reference DeadLetterQueue."""
+        val = get_env_var(self.container, "DLQ_URL")
+        assert val is not None, "DLQ_URL env var must be defined in large task"
+        assert is_ref(val, "DeadLetterQueue"), (
+            f"Large task DLQ_URL should !Ref DeadLetterQueue, got {val}"
+        )
+        assert "DeadLetterQueue" in self.resources
+
+    def test_large_log_config_references_log_group(self):
+        """Large container log configuration must reference LargeModelLogGroup."""
+        log_config = self.container.get("LogConfiguration", {})
+        options = log_config.get("Options", {})
+        log_group = options.get("awslogs-group")
+        assert log_group is not None, "awslogs-group must be defined in large container"
+        assert is_ref(log_group, "LargeModelLogGroup"), (
+            f"Large container awslogs-group should !Ref LargeModelLogGroup, got {log_group}"
+        )
+        assert "LargeModelLogGroup" in self.resources
+
+
+class TestLargeModelScalingCrossReferences:
+    """Large tier: Scaling Policies -> Scalable Target -> ECS Service"""
+
+    def setup_method(self):
+        self.template = load_template()
+        self.resources = get_all_resource_ids(self.template)
+
+    def test_large_scalable_target_references_ecs_service(self):
+        """LargeECSScalableTarget ResourceId must reference ECSCluster and LargeGPUInferenceService."""
+        target = get_resource(self.template, "LargeECSScalableTarget")
+        assert target is not None, "LargeECSScalableTarget not found"
+        props = target.get("Properties", {})
+        resource_id = props.get("ResourceId")
+        refs, getatts = collect_refs_recursive(resource_id)
+        all_targets = refs | getatts
+        assert "ECSCluster" in all_targets or "LargeGPUInferenceService" in all_targets, (
+            f"LargeECSScalableTarget ResourceId should reference large ECS service resources, "
+            f"found refs={refs}, getatts={getatts}"
+        )
+
+    def test_large_scale_out_policy_references_scalable_target(self):
+        """LargeScaleOutPolicy must reference LargeECSScalableTarget."""
+        policy = get_resource(self.template, "LargeScaleOutPolicy")
+        assert policy is not None, "LargeScaleOutPolicy not found"
+        props = policy.get("Properties", {})
+        target_id = props.get("ScalingTargetId")
+        assert is_ref(target_id, "LargeECSScalableTarget"), (
+            f"LargeScaleOutPolicy ScalingTargetId should !Ref LargeECSScalableTarget, got {target_id}"
+        )
+        assert "LargeECSScalableTarget" in self.resources
+
+    def test_large_scale_in_policy_references_scalable_target(self):
+        """LargeScaleInPolicy must reference LargeECSScalableTarget."""
+        policy = get_resource(self.template, "LargeScaleInPolicy")
+        assert policy is not None, "LargeScaleInPolicy not found"
+        props = policy.get("Properties", {})
+        target_id = props.get("ScalingTargetId")
+        assert is_ref(target_id, "LargeECSScalableTarget"), (
+            f"LargeScaleInPolicy ScalingTargetId should !Ref LargeECSScalableTarget, got {target_id}"
+        )
+        assert "LargeECSScalableTarget" in self.resources
+
+
+class TestStackOutputs:
+    """Verify required CloudFormation stack Outputs are defined. (FR-6.3)"""
+
+    REQUIRED_OUTPUT_KEYS = {
+        "ClusterArn",
+        "RequestQueueUrl",
+        "RequestQueueArn",
+        "ECRRepositoryUri",
+        "SmallModelTaskDefinitionArn",
+    }
+
+    def setup_method(self):
+        self.template = load_template()
+
+    def test_outputs_section_exists(self):
+        """Template must have an Outputs section."""
+        assert "Outputs" in self.template, (
+            "CloudFormation template must define an Outputs section"
+        )
+
+    def test_required_output_keys_present(self):
+        """All required output keys must be present in the Outputs section."""
+        outputs = self.template.get("Outputs", {})
+        missing = self.REQUIRED_OUTPUT_KEYS - set(outputs.keys())
+        assert len(missing) == 0, (
+            f"Missing required CloudFormation Outputs: {missing}. "
+            f"These outputs are required for integration tests and CI/CD pipelines. "
+            f"Add them to the template Outputs section."
+        )
+
+    def test_each_required_output_has_value(self):
+        """Each required output must have a non-empty Value field."""
+        outputs = self.template.get("Outputs", {})
+        for key in self.REQUIRED_OUTPUT_KEYS:
+            if key not in outputs:
+                continue  # Caught by test_required_output_keys_present
+            output = outputs[key]
+            assert "Value" in output, (
+                f"Output '{key}' must have a Value field"
+            )
+            assert output["Value"] is not None, (
+                f"Output '{key}' Value must not be null"
+            )

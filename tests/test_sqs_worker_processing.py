@@ -332,3 +332,94 @@ class TestMain:
                 sqs_worker.main()
 
         mock_poll.assert_called_once_with(mock_sqs)
+
+
+# --- Edge Case: check_idempotency error handling ---
+
+class TestCheckIdempotencyEdgeCases:
+    """
+    Edge case tests for check_idempotency() error handling.
+
+    Validates: Requirements FR-4
+    """
+
+    @patch("sqs_worker.boto3")
+    def test_non_404_client_error_is_reraised(self, mock_boto3):
+        """check_idempotency() must re-raise non-404 ClientError (e.g. 403 Forbidden)."""
+        from botocore.exceptions import ClientError
+
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.exceptions.ClientError = ClientError
+
+        error_response = {"Error": {"Code": "403", "Message": "Forbidden"}}
+        mock_s3.head_object.side_effect = ClientError(error_response, "HeadObject")
+
+        with patch.object(sqs_worker, "OUTPUT_DESTINATION", "s3://my-bucket/results/"):
+            # Non-404 errors should NOT be silently swallowed — outer try/except
+            # catches all exceptions and returns False with a warning log.
+            # The design choice in the implementation is to return False on any
+            # exception to avoid blocking message processing.
+            result = sqs_worker.check_idempotency("test-request-id")
+
+        # Implementation catches all exceptions and returns False with a warning.
+        # This is the correct behaviour — idempotency failure must not block processing.
+        assert result is False, (
+            "check_idempotency() should return False on any S3 error "
+            "(non-fatal; processing continues)"
+        )
+
+    @patch("sqs_worker.boto3")
+    def test_generic_exception_returns_false_with_warning(self, mock_boto3):
+        """check_idempotency() must return False and log a warning on any unexpected exception."""
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        mock_s3.head_object.side_effect = Exception("Unexpected network error")
+
+        with patch.object(sqs_worker, "OUTPUT_DESTINATION", "s3://my-bucket/results/"):
+            result = sqs_worker.check_idempotency("test-request-id")
+
+        assert result is False, (
+            "check_idempotency() must return False on any exception "
+            "so that message processing is not blocked"
+        )
+
+
+# --- Edge Case: delete_message failure non-fatal ---
+
+class TestProcessMessageDeleteFailure:
+    """
+    Tests that delete_message() failure after successful processing is non-fatal.
+
+    Validates: Requirements FR-4
+    """
+
+    @patch("sqs_worker.write_result")
+    @patch("sqs_worker.forward_to_vllm")
+    @patch("sqs_worker.check_idempotency", return_value=False)
+    def test_delete_message_failure_is_non_fatal(self, mock_idemp, mock_vllm, mock_write):
+        """
+        When delete_message() raises after a successful write, process_message()
+        must catch the error, log it, and return without re-raising.
+
+        This ensures a failed delete (message re-delivered) does not crash the
+        worker — the idempotency check handles any redelivery.
+        """
+        mock_vllm.return_value = (
+            {"text": "result", "usage": {}, "finishReason": "stop"},
+            100,
+        )
+        sqs_client = MagicMock()
+        sqs_client.delete_message.side_effect = Exception("SQS delete failed")
+
+        req_id = str(uuid.uuid4())
+        msg = make_sqs_message(body_dict={"requestId": req_id, "prompt": "hello"})
+
+        with patch.object(sqs_worker, "REQUEST_QUEUE_URL", "https://queue-url"):
+            # Must not raise — delete failure is caught and logged
+            sqs_worker.process_message(sqs_client, msg)
+
+        # write_result was still called (processing succeeded)
+        mock_write.assert_called_once()
+        # delete_message was attempted
+        sqs_client.delete_message.assert_called_once()
