@@ -39,15 +39,34 @@ POST /infer → API Gateway → Router Lambda ─┤                            
 
 ```
 ├── infrastructure/
-│   └── template.yaml              # CloudFormation template (70 resources)
+│   ├── template.yaml              # CloudFormation template (70 resources)
+│   └── scaling_metric_lambda.py  # Composite scaling metric Lambda (queue depth + GPU utilization)
 ├── container/
 │   ├── Dockerfile                 # vLLM v0.8.0 base + SQS worker
 │   ├── entrypoint.sh              # Model download, vLLM startup, worker launch
 │   ├── sqs_worker.py              # Queue polling, validation, inference forwarding
 │   └── buildspec.yml              # CodeBuild spec for remote image builds
-├── tests/                         # Unit and integration tests
-├── generated-diagrams/            # Architecture diagrams (draw.io, PNG, JPG)
-└── blog-outline.md                # Companion blog post outline
+├── tests/
+│   ├── conftest.py                # Shared pytest fixtures
+│   ├── test_router_lambda.py      # Router Lambda routing logic
+│   ├── test_sqs_worker_processing.py   # SQS worker end-to-end processing
+│   ├── test_sqs_worker_validation.py   # Message schema validation
+│   ├── test_sqs_long_polling.py        # Long-poll behavior
+│   ├── test_valid_request_processing.py
+│   ├── test_malformed_request_dlq_routing.py
+│   ├── test_composite_scaling_metric.py
+│   ├── test_model_s3_path_passthrough.py
+│   ├── test_iam_least_privilege.py
+│   ├── test_cross_references.py        # CloudFormation cross-resource reference checks
+│   ├── test_integration.py             # End-to-end integration tests
+│   ├── test_private_subnet_enforcement.py
+│   ├── test_cost_allocation_tags.py
+│   └── requirements.txt
+├── generated-diagrams/
+│   └── ecs-gpu-inference-dual-tier.svg # Architecture diagram
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+└── LICENSE
 ```
 
 ## Prerequisites
