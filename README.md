@@ -1,6 +1,6 @@
 # ECS GPU Inference Pipeline
 
-Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instances with intelligent request routing. An API Gateway endpoint accepts inference requests, a Router Lambda classifies complexity and routes to the appropriate tier — Mistral-7B on g6e.xlarge for simple requests, Llama-2-70B on g6e.48xlarge for complex ones. Both tiers scale independently from zero, recover automatically from GPU hardware failures, and write results to S3 — deployed with a single CloudFormation template.
+Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instances with intelligent request routing. An API Gateway endpoint accepts inference requests, a Router Lambda classifies complexity and routes to the appropriate tier: Mistral-7B on g6e.xlarge for simple requests, Llama-2-70B on g6e.48xlarge for complex ones. Both tiers scale independently from zero, recover automatically from GPU hardware failures, and write results to S3 deployed with a single CloudFormation template.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instanc
 1. Producer sends a JSON request to `POST /infer` on the API Gateway endpoint
 2. Router Lambda classifies by complexity (prompt length, maxTokens, or explicit `"route"` override) and enqueues to the appropriate SQS queue
 3. ECS tasks on GPU Managed Instances long-poll their respective queue via VPC endpoint
-4. SQS worker validates messages — malformed ones go to a shared DLQ
+4. SQS worker validates messages, malformed ones go to a shared DLQ
 5. Valid requests are forwarded to the local vLLM server for inference
 6. Results are written to S3 as `results/{requestId}.json` with exponential-backoff retry
 7. Processed messages are deleted from the queue; failures return through visibility timeout
@@ -19,17 +19,17 @@ Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instanc
 
 ## Features
 
-- **Intelligent routing** — Router Lambda classifies requests to the right-sized model tier (heuristic + optional Bedrock classification for ambiguous cases)
-- **Scale-to-zero** — no GPU instances running when queues are empty; ECS MI terminates idle instances automatically
-- **Independent scaling** — each tier has its own capacity provider, scaling metric, and alarms
-- **GPU auto-repair** — ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances (XID errors 48, 74, 79, 95, 140)
-- **Deployment circuit breaker** — automatically rolls back failed deployments on both services
-- **Composite scaling metric** — `max(queueDepth/threshold, gpuUtilization/80)` per tier
-- **Idempotent processing** — checks for existing results in S3 before running inference
-- **Least-privilege IAM** — separate task roles per tier, scoped to specific buckets, queues, and namespaces
-- **Enhanced Container Insights** — GPU utilization, memory, temperature, power draw, and XID error telemetry
-- **Pre-built CloudWatch dashboard** — 4 sections: Routing, Small Tier, Large Tier, GPU Hardware
-- **Automatic security patching** — 14-day instance refresh using start-before-stop pattern
+- **Intelligent routing**  Router Lambda classifies requests to the right-sized model tier (heuristic + optional Bedrock classification for ambiguous cases)
+- **Scale-to-zero**  no GPU instances running when queues are empty; ECS MI terminates idle instances automatically
+- **Independent scaling**  each tier has its own capacity provider, scaling metric, and alarms
+- **GPU auto-repair**  ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances (XID errors 48, 74, 79, 95, 140)
+- **Deployment circuit breaker**  automatically rolls back failed deployments on both services
+- **Composite scaling metric**  `max(queueDepth/threshold, gpuUtilization/80)` per tier
+- **Idempotent processing**  checks for existing results in S3 before running inference
+- **Least-privilege IAM** separate task roles per tier, scoped to specific buckets, queues, and namespaces
+- **Enhanced Container Insights**  GPU utilization, memory, temperature, power draw, and XID error telemetry
+- **Pre-built CloudWatch dashboard**  4 sections: Routing, Small Tier, Large Tier, GPU Hardware
+- **Automatic security patching**  14-day instance refresh using start-before-stop pattern
 
 ## Project Structure
 
@@ -115,7 +115,7 @@ aws cloudformation create-stack \
 aws cloudformation wait stack-create-complete --stack-name $STACK_NAME --region $AWS_REGION
 ```
 
-> **Note:** Use `s3://none/none/` as the S3 path placeholder when downloading models from HuggingFace. The entrypoint script skips S3 download for this value. Empty strings cause `Fn::Select` errors in the template.
+> **Note:** Use `` as the S3 path placeholder when downloading models from HuggingFace. The entrypoint script skips S3 download for this value. Empty strings cause `Fn::Select` errors in the template.
 
 Verify stack creation:
 
@@ -127,20 +127,7 @@ aws cloudformation describe-stacks \
 # Expected: CREATE_COMPLETE
 ```
 
-  The template provisions 70 resources across these logical groups:
-  
-•	 Networking: VPC with public/private subnets across 2 AZs, NAT Gateway, VPC Endpoints (S3, SQS, ECR, Amazon CloudWatch Logs)
-•	 Ingestion: API Gateway HTTP API (POST /infer), Router Lambda with SQS and CloudWatch permissions
-•	  Queues: Small request queue, large request queue, shared Dead Letter Queue
-•	  Compute: ECS cluster with two Managed Instances capacity providers, both with GPU auto-repair enabled:
-      o	Small tier: g6e.xlarge/2xlarge (1× L40S, 48 GB VRAM)
-      o	Large tier: g6e.48xlarge (8× L40S, 384 GB VRAM)
-  
-•	  Services: Two ECS services, each polling its own queue with independent desired counts and scaling
-•	  Task definitions: Small (4 vCPU, 16 GiB, 1 GPU, TP=1) and Large (32 vCPU, 128 GiB, 8 GPUs, TP=8)
-•	  IAM: Task execution role, small task role, large task role, router role, instance profile with least privilege policies.
-•	  Autoscaling: Two composite metric Lambdas (EventBridge-scheduled) reading TaskGPUMemoryUtilization per tier, two sets of step scaling policies and CloudWatch Alarms
-•	  Observability: CloudWatch Dashboard (Routing, Small Tier, Large Tier, GPU Hardware sections), GPU temperature alarm, XID error alarm, DLQ depth alarm, SNS topic
+The template provisions 70 resources: VPC with private subnets and VPC endpoints, API Gateway, Router Lambda, SQS queues, ECS cluster with two managed-instance capacity providers (GPU auto-repair enabled), two services with independent scaling, least-privilege IAM roles, composite-metric autoscaling Lambdas, and a CloudWatch dashboard. 
 
 ### Step 3: Retrieve Stack Outputs
 
@@ -159,13 +146,14 @@ export DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NA
 
 The container is based on `vllm/vllm-openai:v0.8.0` (pinned). All dependencies are pinned to exact versions. vLLM parameters are configurable through environment variables at runtime: MODEL_NAME, QUANTIZATION, MAX_SEQ_LEN, GPU_MEM_UTIL, TP_SIZE. The entrypoint handles model download from S3 (or HuggingFace if `MODEL_S3_PATH` is `s3://none/none/`), starts the vLLM OpenAI-compatible server, then launches the SQS worker.
 
-•	Container best practices callout box:
-  o	Pin the base image to an exact version tag. The inference landscape moves fast and breaking changes are common
-  o	Pin all dependency versions: no >= ranges
-  o	Build for a specific GPU architecture, images are not portable across GPU types
-  o	Use --platform linux/amd64 explicitly
-  o	Pack light — only include strictly necessary dependencies
-  o	Tag with a versioned label (e.g., v1.0.0), not just :latest
+**Container best practices callout:**
+
+- **Pin the base image to an exact version tag** The inference landscape moves fast and breaking changes are common
+- **Pin all dependency versions** no >= ranges
+- **Build for a specific GPU architecture** Images are not portable across GPU types
+- **Use --platform linux/amd64 explicitly** 
+- **Pack light — only include strictly necessary dependencies** 
+- **Tag with a versioned label (e.g., v1.0.0), not just :latest** 
 
 
 **Option A CodeBuild (recommended for the ~8 GB image):**
@@ -225,6 +213,7 @@ curl -X POST $INFERENCE_API_URL \
 The router responds synchronously with the assigned tier. Inference runs asynchronously and results arrive in S3.
 
 Check results in S3:
+```bash
 aws s3 ls s3://$RESULTS_BUCKET/results/
 aws s3 cp s3://$RESULTS_BUCKET/results/550e8400-e29b-41d4-a716-446655440000.json -{
   "requestId": "550e8400-e29b-41d4-a716-446655440000",
@@ -237,6 +226,7 @@ aws s3 cp s3://$RESULTS_BUCKET/results/550e8400-e29b-41d4-a716-446655440000.json
   "processingTimeMs": 4956,
   "timestamp": "2026-05-03T04:35:47.906601+00:00"
 }
+```
 Use - to output to stdout, or specify a local file path (e.g. ./result.json)
 
 
@@ -365,14 +355,14 @@ Rate limit: at most 20% of instances in a capacity provider (minimum 1) can be d
 
 ## GPU Metrics and Observability
 
-Metrics are published to CloudWatch Container Insights automatically — no agent installation or sidecar required:
+Metrics are published to CloudWatch Container Insights automatically, no agent installation or sidecar required:
 
-- `TaskGPUUtilization` — compute utilization percentage
-- `TaskGPUMemoryUtilization` — VRAM utilization percentage
-- `TaskGPUTemperature` — temperature in Celsius
-- `TaskGPUPowerDraw` — power consumption in watts
-- `TaskGPURestartAppXidCount` — accumulated XID error count
-- `InstanceGPUUsageTotal` / `InstanceGPULimit` — fleet capacity vs allocation
+- `TaskGPUUtilization` compute utilization percentage
+- `TaskGPUMemoryUtilization` VRAM utilization percentage
+- `TaskGPUTemperature` temperature in Celsius
+- `TaskGPUPowerDraw` power consumption in watts
+- `TaskGPURestartAppXidCount` accumulated XID error count
+- `InstanceGPUUsageTotal` / `InstanceGPULimit` fleet capacity vs allocation
 
 Three CloudWatch Alarms protect the pipeline:
 - GPU temperature > 90°C → SNS notification
@@ -443,16 +433,23 @@ pytest tests/ -v
 ## Key Design Decisions
 
 - **Why asynchronous (SQS) instead of synchronous:** GPU inference is inherently variable-latency. A single request can take anywhere from 2 seconds to several minutes depending on prompt length and model size. A synchronous API would hold connections open for that entire window, making clients responsible for timeout handling and retry logic. SQS decouples producers from consumers: clients get an immediate acknowledgement and the worker processes at its own pace. Visibility timeout handles retries automatically if a task dies mid-flight. The DLQ captures poison messages without blocking the pipeline.
+
 - **Why intelligent routing:** Running all requests through a 70B model wastes ~13× the compute cost on tasks a 7B model handles equally well. The Router Lambda adds a lightweight classification layer: prompt length, maxTokens, explicit override that routes each request to the right-sized model in under 10ms at effectively zero cost (Lambda free tier covers millions of invocations). Borderline cases include prompts of 500–2,000 chars, maxTokens ≤ 1,024, and no explicit override. For these, the router falls back to a fast Bedrock model (Nova Micro or Haiku) for semantic classification. In practice, this routing strategy saves 60–80% on compute costs compared to routing everything through the large tier.
+
 - **Why ECS Managed Instances over Fargate or self-managed EC2:** Fargate doesn't support GPU workloads. Self-managed EC2 requires maintaining GPU-optimized AMIs with pre-configured NVIDIA drivers and Docker GPU runtimes. You also need to configure ECS agents and build custom health checks for hardware failures. With ECS Managed Instance, you get GPU access with Fargate-like operational simplicity: AMI management, ECS agent configuration, and GPU auto-repair are all handled by the service at baseline EC2 pricing with zero control-plane fees.
+
 - **Why g6e over g5:** The g6e family with NVIDIA L40S GPUs provides 48 GB VRAM per GPU, versus 24 GB on the g5's A10G. That extra headroom accommodates larger KV caches for continuous batching, supports longer sequence lengths without truncation, and allows mid-size models (8B–13B) to run unquantized where g5 would require quantization or multi-GPU. The g6e.48xlarge's 8× L40S (384 GB aggregate VRAM) also makes it the natural fit for tensor-parallel 70B inference.
+
 - **Why composite scaling metric:** Standard CPU-based autoscaling is blind to GPU workload demand. A single metric - queue depth or GPU utilization alone - leads to suboptimal scaling. Queue depth alone cannot detect a saturated GPU. Conversely, GPU utilization alone cannot anticipate demand before it arrives.
 The composite metric uses the formula: max(queueDepth / threshold, gpuUtilization / 80)
 •	Queue depth is a leading indicator that triggers scale-out before GPU memory saturates.
 •	GPU utilization is a lagging indicator. It catches sustained saturation that the queue metric may miss during steady-state load.
 A scheduled Lambda computes this per tier and publishes it as a custom CloudWatch metric.
+
 - **Idempotency and at-least-once delivery:** SQS guarantees at-least-once delivery, meaning a message can be delivered more than once under failure conditions. The SQS worker checks S3 for an existing result (results/{requestId}.json) before invoking vLLM, and only deletes the message after successfully writing the result. This prevents duplicate inference runs without requiring a distributed lock or external state store.
+
 - **Deployment circuit breaker:** GPU workloads have cold starts of 5-20 minutes (image pull + model download + engine initialization). Without a circuit breaker, a bad deployment (misconfigured environment variable, incompatible model format, OOM during load) cycles through failing tasks indefinitely, burning expensive GPU instance time.
+
 - **Scale-to-Zero and Cold-Start Trade-offs:** Setting MinTaskCount=0 means no GPU instances run when queues are empty. This is the single largest cost lever, as a g6e.48xlarge left running costs approximately $320/day. However, scale-to-zero means cold starts when the first request arrives after an idle period.
 Observed cold-start times:
 •	Small tier (g6e.xlarge + Mistral-7B): ~7 minutes
@@ -464,8 +461,6 @@ Mitigations:
 •	Pre-bake small models into the container image. For models under 10 GB (like Mistral-7B-AWQ at 3.9 GB), including weights in the image eliminates the runtime download step. The trade-off is a larger image to pull.
 •	Parallel S3 download for larger models. aws s3 cp with multipart transfer maximizes network throughput.
 •	SQS visibility timeout as a buffer. Set visibility timeout to exceed your cold-start time (300s for small tier, 600s for large tier). Messages remain invisible while the instance provisions and the model loads, then become available for processing without returning to the queue prematurely.
-
-`.
 
 ## Cost Considerations
 
