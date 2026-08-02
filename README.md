@@ -138,6 +138,8 @@ export INFERENCE_API_URL=$(aws cloudformation describe-stacks --stack-name $STAC
   --query 'Stacks[0].Outputs[?OutputKey==`InferenceApiUrl`].OutputValue' --output text)
 export ECR_URI=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
   --query 'Stacks[0].Outputs[?OutputKey==`ECRRepositoryUri`].OutputValue' --output text)
+export RESULTS_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \ 
+  --query 'Stacks[0].Outputs[?OutputKey==`ResultsBucketName`].OutputValue' --output text) 
 export DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
   --query 'Stacks[0].Outputs[?OutputKey==`DashboardUrl`].OutputValue' --output text)
 ```
@@ -371,17 +373,17 @@ Three CloudWatch Alarms protect the pipeline:
 
 ## Infrastructure Provisioned (~70 resources)
 
-- **Networking** — VPC, public/private subnets (2 AZs), NAT Gateway, VPC Endpoints (S3, SQS, ECR, CloudWatch Logs)
-- **Ingestion** — API Gateway HTTP API (`POST /infer`), Router Lambda with SQS + CloudWatch + Bedrock permissions
-- **Queues** — Small request queue (300s visibility), large request queue (600s visibility), shared DLQ (14-day retention)
-- **Compute** — ECS cluster with 2 Managed Instances capacity providers:
+- **Networking**  VPC, public/private subnets (2 AZs), NAT Gateway, VPC Endpoints (S3, SQS, ECR, CloudWatch Logs)
+- **Ingestion**  API Gateway HTTP API (`POST /infer`), Router Lambda with SQS + CloudWatch + Bedrock permissions
+- **Queues**  Small request queue (300s visibility), large request queue (600s visibility), shared DLQ (14-day retention)
+- **Compute**  ECS cluster with 2 Managed Instances capacity providers:
   - Small: g6e.xlarge/2xlarge (1× L40S, 48 GB VRAM)
   - Large: g6e.48xlarge (8× L40S, 384 GB VRAM)
-- **Services** — 2 ECS services with independent desired counts and deployment circuit breakers
-- **Container registry** — ECR repository with lifecycle policy (keep 5 tagged, expire untagged after 7 days)
-- **IAM** — Task execution role, small task role, large task role, router role, infrastructure role, instance profile
-- **Autoscaling** — 2 Lambda-based composite metrics (1-min schedule), 2 sets of step scaling policies and alarms
-- **Observability** — 2 log groups, CloudWatch dashboard (4 sections), GPU temperature alarm, XID alarm, DLQ alarm, SNS topic
+- **Services**  2 ECS services with independent desired counts and deployment circuit breakers
+- **Container registry**  ECR repository with lifecycle policy (keep 5 tagged, expire untagged after 7 days)
+- **IAM**  Task execution role, small task role, large task role, router role, infrastructure role, instance profile
+- **Autoscaling** 2 Lambda-based composite metrics (1-min schedule), 2 sets of step scaling policies and alarms
+- **Observability**  2 log groups, CloudWatch dashboard (4 sections), GPU temperature alarm, XID alarm, DLQ alarm, SNS topic
 
 ## Request / Response Format
 
@@ -455,12 +457,12 @@ Observed cold-start times:
 •	Small tier (g6e.xlarge + Mistral-7B): ~7 minutes
 •	Large tier (g6e.48xlarge + Llama-2-70B): ~15-20 minutes
 Mitigations:
-•	Keep MinTaskCount=1 for latency-sensitive tiers. Cost: ~$24/day for g6e.xlarge, ~$320/day for g6e.48xlarge. Eliminates cold starts entirely.
-•	Scheduled scaling: Keep instances warm during expected traffic hours and scale to zero during off-hours. For example, configure the small tier to maintain MinTaskCount=1 Monday through Friday 8am-6pm, and scale to zero on evenings and weekends. This reduces warm time from 168 hours/week to approximately 50 hours/week (roughly 70% savings compared to always-warm) while avoiding cold starts during business hours.
-•	AWQ quantization reduces model weight size (Mistral-7B from ~14 GB to 3.9 GB), directly reducing the time to load weights into VRAM.
-•	Pre-bake small models into the container image. For models under 10 GB (like Mistral-7B-AWQ at 3.9 GB), including weights in the image eliminates the runtime download step. The trade-off is a larger image to pull.
-•	Parallel S3 download for larger models. aws s3 cp with multipart transfer maximizes network throughput.
-•	SQS visibility timeout as a buffer. Set visibility timeout to exceed your cold-start time (300s for small tier, 600s for large tier). Messages remain invisible while the instance provisions and the model loads, then become available for processing without returning to the queue prematurely.
+- *Keep MinTaskCount=1* for latency-sensitive tiers. Cost: ~$24/day for g6e.xlarge, ~$320/day for g6e.48xlarge. Eliminates cold starts entirely.
+- *Scheduled scaling*: Keep instances warm during expected traffic hours and scale to zero during off-hours. For example, configure the small tier to maintain MinTaskCount=1 Monday through Friday 8am-6pm, and scale to zero on evenings and weekends. This reduces warm time from 168 hours/week to approximately 50 hours/week (roughly 70% savings compared to always-warm) while avoiding cold starts during business hours.
+- *AWQ quantization* reduces model weight size (Mistral-7B from ~14 GB to 3.9 GB), directly reducing the time to load weights into VRAM.
+- *Pre-bake small models into the container image* For models under 10 GB (like Mistral-7B-AWQ at 3.9 GB), including weights in the image eliminates the runtime download step. The trade-off is a larger image to pull.
+- *Parallel S3 download* for larger models. aws s3 cp with multipart transfer maximizes network throughput.
+- *SQS visibility timeout as a buffer* Set visibility timeout to exceed your cold-start time (300s for small tier, 600s for large tier). Messages remain invisible while the instance provisions and the model loads, then become available for processing without returning to the queue prematurely.
 
 ## Cost Considerations
 
