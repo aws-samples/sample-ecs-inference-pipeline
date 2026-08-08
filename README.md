@@ -38,7 +38,7 @@ Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instanc
 │   ├── template.yaml              # CloudFormation template (70 resources)
 │   └── scaling_metric_lambda.py   # Composite scaling metric Lambda (queue depth + GPU utilization)
 ├── container/
-│   ├── Dockerfile                 # vLLM v0.8.0 base + SQS worker
+│   ├── Dockerfile                 # vLLM v0.26.0 base + SQS worker
 │   ├── entrypoint.sh              # Model download, vLLM startup, worker launch
 │   ├── sqs_worker.py              # Queue polling, validation, inference forwarding
 │   └── buildspec.yml              # CodeBuild spec for remote image builds
@@ -146,7 +146,7 @@ export DASHBOARD_URL=$(aws cloudformation describe-stacks --stack-name $STACK_NA
 
 ### Step 4: Build and Push the Inference Container
 
-The container is based on `vllm/vllm-openai:v0.8.0` (pinned). All dependencies are pinned to exact versions. vLLM parameters are configurable through environment variables at runtime: MODEL_NAME, QUANTIZATION, MAX_SEQ_LEN, GPU_MEM_UTIL, TP_SIZE. The entrypoint handles model download from S3 (or HuggingFace if `MODEL_S3_PATH` is `s3://none/none/`), starts the vLLM OpenAI-compatible server, then launches the SQS worker.
+The container is based on `vllm/vllm-openai:v0.26.0` (pinned). All dependencies are pinned to exact versions. vLLM parameters are configurable through environment variables at runtime: MODEL_NAME, QUANTIZATION, MAX_SEQ_LEN, GPU_MEM_UTIL, TP_SIZE. The entrypoint handles model download from S3 (or HuggingFace if `MODEL_S3_PATH` is `s3://none/none/`), starts the vLLM OpenAI-compatible server, then launches the SQS worker.
 
 **Container best practices callout:**
 
@@ -155,7 +155,7 @@ The container is based on `vllm/vllm-openai:v0.8.0` (pinned). All dependencies a
 - **Build for a specific GPU architecture** Images are not portable across GPU types
 - **Use --platform linux/amd64 explicitly** 
 - **Pack light — only include strictly necessary dependencies** 
-- **Tag with a versioned label (e.g., v1.0.0), not just :latest** 
+- **Tag with a versioned label (e.g., v2.0.0), not just :latest** 
 
 
 **Option A CodeBuild (recommended for the ~8 GB image):**
@@ -170,8 +170,8 @@ aws codebuild start-build --project-name ${STACK_NAME}-build --region $AWS_REGIO
 
 ```bash
 aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_URI
-docker build --platform linux/amd64 -t $ECR_URI:v1.0.0 -t $ECR_URI:latest container/
-docker push $ECR_URI:v1.0.0 && docker push $ECR_URI:latest
+docker build --platform linux/amd64 -t $ECR_URI:v2.0.0 -t $ECR_URI:latest container/
+docker push $ECR_URI:v2.0.0 && docker push $ECR_URI:latest
 ```
 
 > **Timing:** The local build pulls ~8 GB for the vLLM base image and takes approximately 12 minutes to build, plus 20+ minutes to push all layers to ECR.
