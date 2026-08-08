@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:v0.8.0 AS base
+FROM vllm/vllm-openai:v0.26.0 AS base
 
 # Target: linux/amd64
 
