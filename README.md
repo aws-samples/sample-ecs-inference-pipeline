@@ -217,6 +217,28 @@ aws s3 cp s3://${STACK_NAME}-results-${AWS_REGION}/results/550e8400-e29b-41d4-a7
 - **Autoscaling** — 2 Lambda-based composite metrics, 2 sets of step scaling policies and alarms
 - **Observability** — 3 log groups, dashboard (4 sections), GPU temperature alarm, GPU XID alarm, DLQ alarm, SNS topic, container-instance health EventBridge rule (GPU auto-repair events → Logs + SNS)
 
+## GPU Auto-Repair
+
+Both capacity providers enable ECS Managed Instances GPU auto repair
+(`autoRepairConfiguration.actionsStatus = ENABLED`). ECS uses NVIDIA DCGM to monitor GPU health;
+when DCGM reports a critical XID, ECS marks the container instance `IMPAIRED`
+(`ACCELERATED_COMPUTE` health check, `statusReason` `XID_<n>`) and replaces it with a
+start-before-stop workflow — provisioning a healthy instance before draining and terminating the
+faulted one, so capacity is never lost. The stack also ships an EventBridge rule that records
+these health-change events to CloudWatch Logs and the SNS alarm topic.
+
+To see it end-to-end without waiting for real hardware to fail, the
+[`demos/gpu-auto-repair/`](demos/gpu-auto-repair/README.md) demo injects a synthetic NVIDIA XID
+into the host DCGM engine from an ECS task. Verified on a live g6e.xlarge (L40S) cluster:
+
+| Stage | Timing |
+|---|---|
+| Inject `XID 79` → ECS marks instance `IMPAIRED` (`XID_79`) | ~2 minutes |
+| `IMPAIRED` → drain + replacement provisioned + faulted instance terminated | ~8 minutes |
+
+See the [demo README](demos/gpu-auto-repair/README.md) for the injection method, the socket-mount
+detail specific to Managed Instances, and step-by-step verification.
+
 ## Observed Performance (Small Tier — Mistral-7B-AWQ on g6e.xlarge)
 
 | Metric | Value |
@@ -286,6 +308,13 @@ aws cloudformation delete-stack --stack-name $STACK_NAME --region $AWS_REGION
 ```
 
 Managed Instances are fully cleaned up when the capacity provider is deleted — no orphaned ASGs or launch templates.
+
+> If you ran the [GPU auto-repair demo](demos/gpu-auto-repair/README.md), also remove its leftovers
+> (the EventBridge rule and health log group are part of the stack and go with it):
+> ```bash
+> aws logs delete-log-group --log-group-name /ecs/xid-inject --region $AWS_REGION
+> aws iam delete-role-policy --role-name ${STACK_NAME}-task-role --policy-name EcsExecForXidInject
+> ```
 
 ## License
 
