@@ -652,7 +652,7 @@ class TestInfrastructureRoleCrossReferences:
                 principals.append(svc)
             elif isinstance(svc, list):
                 principals.extend(svc)
-        assert "ecs.amazonaws.com" in principals, (
+        assert any(p == "ecs.amazonaws.com" for p in principals), (
             f"Infrastructure role must trust ecs.amazonaws.com, found {principals}"
         )
 
