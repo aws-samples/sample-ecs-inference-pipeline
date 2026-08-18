@@ -27,7 +27,7 @@ POST /infer → API Gateway → Router Lambda ─┤                            
 - **Intelligent routing** — Router Lambda classifies requests to the right-sized model tier
 - **Scale-to-zero** — no GPU instances running when queues are empty
 - **Independent scaling** — each tier has its own capacity provider, scaling metric, and alarms
-- **GPU auto-repair** — ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances
+- **GPU auto-repair** — ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances ([demo](demos/gpu-auto-repair/README.md))
 - **Deployment circuit breaker** — automatically rolls back failed deployments on both services
 - **Composite scaling metric** — `max(queueDepth/threshold, gpuUtilization/80)` per tier
 - **Idempotent processing** — checks for existing results in S3 before running inference
@@ -39,7 +39,7 @@ POST /infer → API Gateway → Router Lambda ─┤                            
 
 ```
 ├── infrastructure/
-│   ├── template.yaml              # CloudFormation template (70 resources)
+│   ├── template.yaml              # CloudFormation template (75 resources)
 │   └── scaling_metric_lambda.py  # Composite scaling metric Lambda (queue depth + GPU utilization)
 ├── container/
 │   ├── Dockerfile                 # vLLM v0.8.0 base + SQS worker
@@ -62,6 +62,8 @@ POST /infer → API Gateway → Router Lambda ─┤                            
 │   ├── test_private_subnet_enforcement.py
 │   ├── test_cost_allocation_tags.py
 │   └── requirements.txt
+├── demos/
+│   └── gpu-auto-repair/           # XID fault-injection demo for ECS MI GPU auto repair
 ├── generated-diagrams/
 │   └── ecs-gpu-inference-dual-tier.svg # Architecture diagram
 ├── CONTRIBUTING.md
@@ -201,7 +203,7 @@ aws s3 cp s3://${STACK_NAME}-results-${AWS_REGION}/results/550e8400-e29b-41d4-a7
 | `OutputDestination` | `""` | S3 URI or SQS URL for results |
 | `CostAllocationTagProject` | `gpu-inference-pipeline` | Cost allocation tag |
 
-## Infrastructure Provisioned (70 resources)
+## Infrastructure Provisioned (75 resources)
 
 - **Networking** — VPC, public/private subnets (2 AZs), NAT Gateway, VPC Endpoints (S3, SQS, ECR, CloudWatch Logs)
 - **Ingestion** — API Gateway HTTP API (`POST /infer`), Router Lambda with SQS + CloudWatch permissions
@@ -213,7 +215,7 @@ aws s3 cp s3://${STACK_NAME}-results-${AWS_REGION}/results/550e8400-e29b-41d4-a7
 - **Container registry** — ECR repository with lifecycle policy
 - **IAM** — Task execution role, small task role, large task role, router role, infrastructure role, instance profile
 - **Autoscaling** — 2 Lambda-based composite metrics, 2 sets of step scaling policies and alarms
-- **Observability** — 2 log groups, dashboard (4 sections), GPU temperature alarm, DLQ alarm, SNS topic
+- **Observability** — 3 log groups, dashboard (4 sections), GPU temperature alarm, GPU XID alarm, DLQ alarm, SNS topic, container-instance health EventBridge rule (GPU auto-repair events → Logs + SNS)
 
 ## Observed Performance (Small Tier — Mistral-7B-AWQ on g6e.xlarge)
 

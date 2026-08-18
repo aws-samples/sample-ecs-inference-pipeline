@@ -1,0 +1,46 @@
+{
+  "family": "xid-inject",
+  "requiresCompatibilities": ["EC2"],
+  "networkMode": "host",
+  "pidMode": "host",
+  "taskRoleArn": "TASK_ROLE_ARN",
+  "executionRoleArn": "EXECUTION_ROLE_ARN",
+  "volumes": [
+    { "name": "hostdcgm", "host": { "sourcePath": "/run/nvidia-dcgm" } }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "xid-inject",
+      "image": "nvcr.io/nvidia/cloud-native/dcgm:4.2.3-1-ubuntu22.04",
+      "essential": true,
+      "privileged": true,
+      "cpu": 0,
+      "memory": 1024,
+      "entryPoint": ["/bin/bash", "-lc"],
+      "command": [
+        "echo \"host: $(hostname)\"; dcgmi discovery -l --host \"$DCGM_HOST\" | head -8; echo \"=== injecting XID ${XID_CODE} into GPU ${GPU_ID} via $DCGM_HOST ===\"; dcgmi test --inject --gpuid \"${GPU_ID}\" -f 230 -v \"${XID_CODE}\" --host \"$DCGM_HOST\" && echo INJECT_OK || echo \"INJECT_FAILED rc=$?\"; echo 'Injection submitted. Idling for on-demand injection (ECS Exec) ...'; sleep 3600"
+      ],
+      "environment": [
+        { "name": "XID_CODE", "value": "79" },
+        { "name": "GPU_ID", "value": "0" },
+        { "name": "DCGM_HOST", "value": "unix:///hostdcgm/nv-hostengine" }
+      ],
+      "mountPoints": [
+        { "sourceVolume": "hostdcgm", "containerPath": "/hostdcgm", "readOnly": false }
+      ],
+      "linuxParameters": {
+        "capabilities": {
+          "add": ["SYS_ADMIN"]
+        }
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/xid-inject",
+          "awslogs-region": "AWS_REGION",
+          "awslogs-stream-prefix": "xid"
+        }
+      }
+    }
+  ]
+}

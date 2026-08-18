@@ -1962,6 +1962,89 @@ Resources:
       AlarmActions:
         - !Ref AlarmNotificationTopic
 
+  #############################################
+  # GPU auto-repair observability
+  # Captures "ECS Container Instance Health Change" events (GPU XID impairments
+  # and the repair activity that follows) to CloudWatch Logs and SNS.
+  #############################################
+
+  ContainerInstanceHealthLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}/container-instance-health'
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-container-instance-health'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  # Allow EventBridge to deliver events into the log group above
+  ContainerInstanceHealthLogPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-ci-health-eb'
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": ["events.amazonaws.com", "delivery.logs.amazonaws.com"]
+              },
+              "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+              "Resource": "${ContainerInstanceHealthLogGroup.Arn}",
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${AWS::StackName}-container-instance-health"
+                }
+              }
+            }
+          ]
+        }
+
+  # Allow EventBridge to publish health events to the existing alarm topic
+  ContainerInstanceHealthTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlarmNotificationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlarmNotificationTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${AWS::StackName}-container-instance-health'
+
+  ContainerInstanceHealthEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AWS::StackName}-container-instance-health'
+      Description: Route ECS container instance health changes (GPU XID impairments) to CloudWatch Logs and SNS
+      EventPattern:
+        source:
+          - aws.ecs
+        detail-type:
+          - ECS Container Instance Health Change
+        detail:
+          clusterArn:
+            - !GetAtt ECSCluster.Arn
+          overallStatus:
+            - IMPAIRED
+      State: ENABLED
+      Targets:
+        - Id: cw-logs
+          Arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AWS::StackName}/container-instance-health'
+        - Id: sns-notify
+          Arn: !Ref AlarmNotificationTopic
+
 Outputs:
   ClusterArn:
     Description: ECS Cluster ARN for service deployments
@@ -2010,3 +2093,7 @@ Outputs:
   LargeModelServiceName:
     Description: Large-model ECS Service name
     Value: !GetAtt LargeGPUInferenceService.Name
+
+  ContainerInstanceHealthLogGroup:
+    Description: CloudWatch Logs group capturing ECS container instance health changes (GPU XID impairments and auto-repair activity)
+    Value: !Ref ContainerInstanceHealthLogGroup

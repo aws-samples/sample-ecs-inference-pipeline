@@ -1,0 +1,10 @@
+{
+  "comment": "EventBridge event pattern that captures ECS container instance health changes (including ACCELERATED_COMPUTE / GPU XID impairments) for this cluster. Route it to a CloudWatch Logs group, SNS topic, or Lambda to observe/alert on GPU faults and repair activity.",
+  "eventPattern": {
+    "source": ["aws.ecs"],
+    "detail-type": ["ECS Container Instance Health Change"],
+    "detail": {
+      "overallStatus": ["IMPAIRED"]
+    }
+  }
+}
