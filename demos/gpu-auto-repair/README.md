@@ -1,7 +1,7 @@
 # GPU Auto-Repair Demo (XID Fault Injection)
 
 Showcase Amazon ECS Managed Instances **GPU auto repair** in action by simulating an
-NVIDIA XID error — no real hardware fault required. This is the ECS analogue of the
+NVIDIA XID error, no real hardware fault required. This is the ECS analogue of the
 EKS [`xid-injection`](https://github.com/aws-samples/sample-eks-docs/tree/main/ai-ml/manifests/xid-injection)
 sample: instead of injecting into a node monitoring agent from a `hostNetwork` pod, we
 inject into the host's DCGM `nv-hostengine` from an ECS task and let the ECS agent's GPU health
@@ -31,7 +31,7 @@ XID code in the form `XID_<number>`, and marks the instance `IMPAIRED`.
 With auto repair enabled (`autoRepairConfiguration.actionsStatus = ENABLED`), ECS replaces the
 impaired instance using a **start-before-stop** workflow:
 
-1. The impaired instance is set to `DRAINING` — no new tasks placed on it.
+1. The impaired instance is set to `DRAINING`, no new tasks placed on it.
 2. ECS provisions a replacement instance.
 3. Existing tasks drain gracefully (the task stop timeout is honored).
 4. After draining, ECS terminates the impaired instance.
@@ -64,11 +64,10 @@ table): `46, 48, 54, 62, 64, 74, 79, 95, 109, 110, 136, 140, 142, 143, 151, 155,
 ## Injection method
 
 DCGM exposes an error-injection framework. Writing a synthetic value into DCGM **field 230**
-(the XID field) makes DCGM report that XID to every client watching that host engine —
-including the ECS agent's health monitor — exactly as a real fault would.
+(the XID field) makes DCGM report that XID to every client watching that host engine including the ECS agent's health monitor, exactly as a real fault would.
 
 On an ECS Managed Instance the host runs a single `nv-hostengine` (systemd unit `nvidia-dcgm`)
-bound to a **unix domain socket at `/run/nvidia-dcgm/nv-hostengine`** — *not* TCP port 5555. The
+bound to a **unix domain socket at `/run/nvidia-dcgm/nv-hostengine`** *not* TCP port 5555. The
 ECS GPU health monitor reads that same engine, so the injector must reach it there:
 
 ```
@@ -122,7 +121,7 @@ cd demos/gpu-auto-repair
 capacity provider, and prints which instance it landed on plus the follow-up commands (log
 tail, repair watch, on-demand exec).
 
-Confirm the injection succeeded in the injector log — look for `Successfully injected field
+Confirm the injection succeeded in the injector log, look for `Successfully injected field
 info.` followed by `INJECT_OK`:
 
 ```bash

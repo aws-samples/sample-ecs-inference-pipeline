@@ -511,6 +511,13 @@ ECS Managed Instances automatically terminates backing instances when the capaci
 - Images are scanned on push for CVEs
 - All data at rest (S3 SSE, SQS SSE) and in transit (TLS) is encrypted
 
+> If you ran the [GPU auto-repair demo](demos/gpu-auto-repair/README.md), also remove its leftovers
+> (the EventBridge rule and health log group are part of the stack and go with it):
+> ```bash
+> aws logs delete-log-group --log-group-name /ecs/xid-inject --region $AWS_REGION
+> aws iam delete-role-policy --role-name ${STACK_NAME}-task-role --policy-name EcsExecForXidInject
+> ```
+
 ## License
 
 See [LICENSE](LICENSE) for details.
