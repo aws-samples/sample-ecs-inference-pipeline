@@ -58,6 +58,8 @@ Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instanc
 │   ├── test_private_subnet_enforcement.py
 │   ├── test_cost_allocation_tags.py
 │   └── requirements.txt
+├── demos/
+│   └── gpu-auto-repair/           # XID fault-injection demo for ECS MI GPU auto repair
 ├── generated-diagrams/
 │   └── ecs-gpu-inference-dual-tier.svg # Architecture diagram
 ├── CONTRIBUTING.md
