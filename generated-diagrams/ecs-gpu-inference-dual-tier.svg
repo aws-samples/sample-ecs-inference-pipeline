@@ -67,7 +67,7 @@
   <rect x="650" y="115" width="170" height="60" rx="6" fill="white" stroke="#4CAF50" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="735" y="133" text-anchor="middle" font-size="10" font-weight="bold" fill="#232F3E">ECS Managed Instance</text>
   <text x="735" y="148" text-anchor="middle" font-size="10" fill="#4CAF50" font-weight="bold">g6e.xlarge · 1× L40S</text>
-  <text x="735" y="163" text-anchor="middle" font-size="9" fill="#666">vLLM v0.8.0 · TP=1</text>
+  <text x="735" y="163" text-anchor="middle" font-size="9" fill="#666">vLLM v0.26.0 · TP=1</text>
 
   <!-- Small DCGM badge -->
   <rect x="650" y="180" width="170" height="18" rx="3" fill="#FFF3E0" stroke="#E65100" stroke-width="0.8"/>
@@ -100,7 +100,7 @@
   <rect x="650" y="300" width="170" height="60" rx="6" fill="white" stroke="#1976D2" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="735" y="318" text-anchor="middle" font-size="10" font-weight="bold" fill="#232F3E">ECS Managed Instance</text>
   <text x="735" y="333" text-anchor="middle" font-size="10" fill="#1976D2" font-weight="bold">g6e.48xlarge · 8× L40S</text>
-  <text x="735" y="348" text-anchor="middle" font-size="9" fill="#666">vLLM v0.8.0 · TP=8</text>
+  <text x="735" y="348" text-anchor="middle" font-size="9" fill="#666">vLLM v0.26.0 · TP=8</text>
 
   <!-- Large DCGM badge -->
   <rect x="650" y="365" width="170" height="18" rx="3" fill="#E3F2FD" stroke="#1976D2" stroke-width="0.8"/>

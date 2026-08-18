@@ -5,8 +5,8 @@ phases:
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
   build:
     commands:
-      - docker build --platform linux/amd64 -t $ECR_REPO_URI:latest -t $ECR_REPO_URI:v1.0.0 .
+      - docker build --platform linux/amd64 -t $ECR_REPO_URI:latest -t $ECR_REPO_URI:v2.0.0 .
   post_build:
     commands:
       - docker push $ECR_REPO_URI:latest
-      - docker push $ECR_REPO_URI:v1.0.0
+      - docker push $ECR_REPO_URI:v2.0.0
