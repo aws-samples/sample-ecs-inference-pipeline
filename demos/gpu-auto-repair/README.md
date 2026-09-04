@@ -12,6 +12,16 @@ monitor pick it up.
 > drained it, launched a replacement (start-before-stop), and terminated the impaired instance
 > — full cycle ~8 minutes. See [Verified result](#verified-result).
 
+## Architecture
+
+![GPU auto-repair architecture](../../generated-diagrams/ecs-gpu-auto-repair.svg)
+
+The injector task writes a synthetic XID into the host DCGM engine (①–②); the ECS agent's GPU
+health monitor reports `ACCELERATED_COMPUTE = IMPAIRED` (③); the capacity provider's
+`autoRepairConfiguration.actionsStatus = ENABLED` triggers a start-before-stop replacement (④–⑥).
+GPU metrics (via DCGM/Container Insights) and the `Container Instance Health Change` events flow
+to CloudWatch.
+
 References:
 - [GPU auto repair for Amazon ECS managed instances](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/managed-instances-gpu-auto-repair.html)
 - [Monitor Amazon ECS container instance health](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/container-instance-health.html)

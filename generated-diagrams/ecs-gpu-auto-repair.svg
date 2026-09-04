@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 980" font-family="Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#555"/></marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#2E7D32"/></marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#1976D2"/></marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#D32F2F"/></marker>
+    <marker id="arrow-gray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#999"/></marker>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#E65100"/></marker>
+    <marker id="arrow-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#7B2F8E"/></marker>
+    <marker id="arrow-pink" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#E7157B"/></marker>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="1" dy="1" stdDeviation="2" flood-opacity="0.15"/></filter>
+  </defs>
+
+  <rect width="1240" height="980" fill="#FAFAFA" rx="8"/>
+
+  <!-- Title -->
+  <text x="620" y="32" text-anchor="middle" font-size="17" font-weight="bold" fill="#232F3E">Amazon ECS Managed Instances — GPU Auto Repair</text>
+  <text x="620" y="50" text-anchor="middle" font-size="11" fill="#666">Synthetic NVIDIA XID → DCGM → ECS agent health monitor → capacity-provider auto repair (start-before-stop)</text>
+
+  <!-- ======================= ROW 1: the auto-repair loop ======================= -->
+
+  <!-- (4) control-plane repair action arc, drawn first so boxes sit on top -->
+  <path d="M744,150 C600,58 470,58 400,120" fill="none" stroke="#2E7D32" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <text x="560" y="66" text-anchor="middle" font-size="9" font-weight="bold" fill="#2E7D32">④ drain + replace</text>
+
+  <!-- Injector task -->
+  <rect x="24" y="150" width="176" height="104" rx="8" fill="#ED7100" filter="url(#shadow)"/>
+  <text x="112" y="174" text-anchor="middle" font-size="11" font-weight="bold" fill="white">xid-inject task</text>
+  <text x="112" y="191" text-anchor="middle" font-size="9" fill="#FFE0B2">requiresCompatibilities:</text>
+  <text x="112" y="203" text-anchor="middle" font-size="9" fill="#FFE0B2">MANAGED_INSTANCES</text>
+  <text x="112" y="219" text-anchor="middle" font-size="9" fill="#FFF">image: amazonlinux</text>
+  <text x="112" y="233" text-anchor="middle" font-size="9" fill="#FFF">privileged · pidMode: host</text>
+  <text x="112" y="247" text-anchor="middle" font-size="9" fill="#FFF">cpu:0 · no GPU reserved</text>
+
+  <!-- (1) inject arrow -->
+  <line x1="200" y1="200" x2="296" y2="200" stroke="#D32F2F" stroke-width="1.8" marker-end="url(#arrow-red)"/>
+  <text x="248" y="189" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#D32F2F">① chroot /proc/1/root</text>
+  <text x="248" y="215" text-anchor="middle" font-size="8" fill="#D32F2F">dcgmi test --inject -f 230 -v 79</text>
+
+  <!-- GPU Managed Instance -->
+  <rect x="300" y="96" width="380" height="312" rx="10" fill="white" stroke="#4CAF50" stroke-width="2" filter="url(#shadow)"/>
+  <text x="490" y="116" text-anchor="middle" font-size="11" font-weight="bold" fill="#232F3E">GPU Managed Instance (container instance)</text>
+
+  <!-- status + health pills -->
+  <rect x="314" y="126" width="168" height="26" rx="13" fill="#FFF3E0" stroke="#E65100" stroke-width="1"/>
+  <text x="398" y="143" text-anchor="middle" font-size="8.5" font-weight="bold"><tspan fill="#2E7D32">status: ACTIVE</tspan><tspan fill="#666"> → </tspan><tspan fill="#E65100">DRAINING</tspan></text>
+  <rect x="496" y="126" width="170" height="26" rx="13" fill="#FFEBEE" stroke="#D32F2F" stroke-width="1"/>
+  <text x="581" y="143" text-anchor="middle" font-size="8.5" font-weight="bold"><tspan fill="#2E7D32">overallStatus: OK</tspan><tspan fill="#666"> → </tspan><tspan fill="#D32F2F">IMPAIRED</tspan></text>
+
+  <!-- GPU + vLLM -->
+  <rect x="314" y="160" width="168" height="52" rx="6" fill="#F1F8E9" stroke="#76B900" stroke-width="1.5"/>
+  <text x="398" y="182" text-anchor="middle" font-size="10" font-weight="bold" fill="#33691E">NVIDIA L40S GPU</text>
+  <text x="398" y="198" text-anchor="middle" font-size="8" fill="#558B2F">device the XID is injected against</text>
+  <rect x="496" y="160" width="170" height="52" rx="6" fill="#FAFAFA" stroke="#BDBDBD" stroke-width="1.2"/>
+  <text x="581" y="181" text-anchor="middle" font-size="9.5" fill="#232F3E">vLLM inference task</text>
+  <text x="581" y="197" text-anchor="middle" font-size="8" fill="#777">co-located · GPU reserved</text>
+
+  <!-- internal arrows -->
+  <line x1="398" y1="212" x2="398" y2="224" stroke="#999" stroke-width="1.3" marker-end="url(#arrow-gray)"/>
+  <line x1="490" y1="290" x2="490" y2="302" stroke="#999" stroke-width="1.3" marker-end="url(#arrow-gray)"/>
+
+  <!-- DCGM -->
+  <rect x="314" y="224" width="352" height="66" rx="6" fill="#E8F5E9" stroke="#76B900" stroke-width="1.5"/>
+  <text x="490" y="244" text-anchor="middle" font-size="10" font-weight="bold" fill="#2E7D32">nv-hostengine · DCGM</text>
+  <text x="490" y="259" text-anchor="middle" font-size="8" fill="#555">unix:///run/nvidia-dcgm/nv-hostengine</text>
+  <text x="490" y="275" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#D32F2F">② synthetic XID written to field 230</text>
+
+  <!-- ECS agent -->
+  <rect x="314" y="302" width="352" height="66" rx="6" fill="#FFF8E1" stroke="#F9A825" stroke-width="1.5"/>
+  <text x="490" y="322" text-anchor="middle" font-size="10" font-weight="bold" fill="#E65100">ECS agent — GPU health monitor</text>
+  <text x="490" y="337" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#D32F2F">③ ACCELERATED_COMPUTE = IMPAIRED</text>
+  <text x="490" y="351" text-anchor="middle" font-size="8" fill="#777">reason surfaced as XID_79 in the health event</text>
+
+  <!-- (3) health signal to control plane -->
+  <path d="M666,335 C700,335 710,300 744,300" fill="none" stroke="#E65100" stroke-width="1.8" marker-end="url(#arrow-orange)"/>
+  <text x="705" y="292" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#E65100">③ IMPAIRED</text>
+
+  <!-- ECS Control Plane -->
+  <rect x="728" y="96" width="488" height="312" rx="10" fill="#ECEFF1" stroke="#232F3E" stroke-width="1.5"/>
+  <rect x="728" y="96" width="488" height="26" rx="10" fill="#232F3E"/>
+  <text x="972" y="114" text-anchor="middle" font-size="11" font-weight="bold" fill="white">Amazon ECS — Control Plane</text>
+
+  <!-- Capacity Provider -->
+  <rect x="744" y="132" width="456" height="112" rx="8" fill="white" stroke="#ED7100" stroke-width="1.5"/>
+  <text x="972" y="151" text-anchor="middle" font-size="10" font-weight="bold" fill="#232F3E">Capacity Provider — Managed Instances</text>
+  <text x="756" y="168" font-size="8.5" fill="#555">name: gpu-inference-&lt;stack&gt;-capacity</text>
+  <text x="756" y="183" font-size="8.5" fill="#555">managedInstancesProvider.autoRepairConfiguration:</text>
+  <rect x="756" y="190" width="212" height="24" rx="6" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.2"/>
+  <text x="862" y="206" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#2E7D32">actionsStatus = ENABLED</text>
+  <text x="756" y="232" font-size="8" font-style="italic" fill="#777">GPU auto repair is available only for Managed Instances</text>
+
+  <!-- Auto Repair engine -->
+  <rect x="744" y="252" width="456" height="144" rx="8" fill="white" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="972" y="271" text-anchor="middle" font-size="10" font-weight="bold" fill="#2E7D32">GPU Auto Repair — start-before-stop</text>
+  <text x="756" y="289" font-size="9" font-weight="bold" fill="#232F3E">④ on overallStatus = IMPAIRED:</text>
+  <text x="766" y="306" font-size="8.5" fill="#555">1 · set container instance → DRAINING</text>
+  <text x="766" y="321" font-size="8.5" fill="#555">2 · provision replacement instance</text>
+  <text x="766" y="336" font-size="8.5" fill="#555">3 · drain tasks (honor stopTimeout)</text>
+  <text x="766" y="351" font-size="8.5" fill="#555">4 · terminate impaired instance</text>
+  <text x="756" y="374" font-size="8" font-style="italic" fill="#777">rate limit: ≤ 20% of provider (min 1) drained at a time</text>
+
+  <!-- (5) / (6) outcome pills -->
+  <rect x="300" y="418" width="380" height="30" rx="8" fill="#E8F5E9" stroke="#4CAF50" stroke-width="1.2"/>
+  <text x="490" y="437" text-anchor="middle" font-size="9" font-weight="bold" fill="#2E7D32">⑤ Replacement launched — ACTIVE · overallStatus OK</text>
+  <rect x="728" y="418" width="488" height="30" rx="8" fill="#F5F5F5" stroke="#9E9E9E" stroke-width="1.2"/>
+  <text x="972" y="437" text-anchor="middle" font-size="9" font-weight="bold" fill="#616161">⑥ Impaired instance terminated after drain</text>
+
+  <!-- ======================= ROW 2: watch + observability ======================= -->
+
+  <!-- connectors into row 2 (drawn before panels so heads meet panel edges) -->
+  <path d="M410,449 C380,458 340,460 322,470" fill="none" stroke="#1976D2" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#arrow-blue)"/>
+  <text x="352" y="462" text-anchor="middle" font-size="8" fill="#1976D2">watch</text>
+  <path d="M560,449 C600,470 720,486 792,510" fill="none" stroke="#E7157B" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#arrow-pink)"/>
+  <text x="648" y="470" text-anchor="middle" font-size="8" fill="#C2185B">GPU metrics (DCGM)</text>
+  <path d="M1216,300 C1232,300 1232,690 1204,712" fill="none" stroke="#7B2F8E" stroke-width="1.6" stroke-dasharray="5,3" marker-end="url(#arrow-purple)"/>
+  <text x="1232" y="504" text-anchor="middle" font-size="8" fill="#7B2F8E" transform="rotate(90,1232,504)">health-change events</text>
+
+  <!-- Watch panel -->
+  <rect x="24" y="470" width="580" height="472" rx="10" fill="white" stroke="#1976D2" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="314" y="496" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1976D2">Watch — DescribeContainerInstances</text>
+  <text x="314" y="513" text-anchor="middle" font-size="8.5" fill="#666">aws ecs describe-container-instances --include CONTAINER_INSTANCE_HEALTH  ·  observe-repair.sh</text>
+
+  <!-- status transition -->
+  <text x="44" y="556" font-size="9.5" font-weight="bold" fill="#232F3E">Container instance status</text>
+  <rect x="44" y="566" width="118" height="36" rx="8" fill="#E8F5E9" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="103" y="589" text-anchor="middle" font-size="11" font-weight="bold" fill="#2E7D32">ACTIVE</text>
+  <line x1="168" y1="584" x2="246" y2="584" stroke="#E65100" stroke-width="1.8" marker-end="url(#arrow-orange)"/>
+  <text x="207" y="577" text-anchor="middle" font-size="8" fill="#E65100">auto repair</text>
+  <rect x="252" y="566" width="130" height="36" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
+  <text x="317" y="589" text-anchor="middle" font-size="11" font-weight="bold" fill="#E65100">DRAINING</text>
+
+  <!-- health transition -->
+  <text x="44" y="644" font-size="9.5" font-weight="bold" fill="#232F3E">healthStatus.overallStatus</text>
+  <rect x="44" y="654" width="118" height="36" rx="8" fill="#E8F5E9" stroke="#4CAF50" stroke-width="1.5"/>
+  <text x="103" y="677" text-anchor="middle" font-size="11" font-weight="bold" fill="#2E7D32">OK</text>
+  <line x1="168" y1="672" x2="246" y2="672" stroke="#D32F2F" stroke-width="1.8" marker-end="url(#arrow-red)"/>
+  <text x="207" y="665" text-anchor="middle" font-size="8" font-weight="bold" fill="#D32F2F">XID_79</text>
+  <rect x="252" y="654" width="130" height="36" rx="8" fill="#FFEBEE" stroke="#D32F2F" stroke-width="1.5"/>
+  <text x="317" y="677" text-anchor="middle" font-size="11" font-weight="bold" fill="#D32F2F">IMPAIRED</text>
+  <text x="252" y="706" text-anchor="middle" font-size="7.5" fill="#777">detected via ACCELERATED_COMPUTE health check</text>
+
+  <!-- note -->
+  <rect x="410" y="548" width="176" height="150" rx="8" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+  <text x="422" y="566" font-size="8.5" font-weight="bold" fill="#555">Note</text>
+  <text x="422" y="582" font-size="8" fill="#666">ACCELERATED_COMPUTE</text>
+  <text x="422" y="595" font-size="8" fill="#666">statusReason is empty on</text>
+  <text x="422" y="608" font-size="8" fill="#666">DescribeContainerInstances;</text>
+  <text x="422" y="621" font-size="8" fill="#666">once repair starts the top-</text>
+  <text x="422" y="634" font-size="8" fill="#666">level statusReason contains</text>
+  <text x="422" y="647" font-size="8" fill="#666">INSTANCE_HEALTH.</text>
+  <text x="422" y="665" font-size="8" fill="#666">The XID_&lt;n&gt; reason appears</text>
+  <text x="422" y="678" font-size="8" fill="#666">in the EventBridge health</text>
+  <text x="422" y="691" font-size="8" fill="#666">event (see right) →</text>
+
+  <text x="44" y="742" font-size="8" font-style="italic" fill="#777">overallStatus ∈ { OK · IMPAIRED · INSUFFICIENT_DATA · INITIALIZING }</text>
+
+  <!-- Observability panel -->
+  <rect x="636" y="470" width="580" height="472" rx="10" fill="white" stroke="#E7157B" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="926" y="496" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#C2185B">Observability → Amazon CloudWatch</text>
+
+  <!-- GPU metrics block -->
+  <rect x="652" y="512" width="548" height="196" rx="8" fill="#FCE4EC" stroke="#E7157B" stroke-width="1.2"/>
+  <text x="926" y="532" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#C2185B">GPU metrics — NVIDIA DCGM → Container Insights (enhanced)</text>
+  <text x="926" y="547" text-anchor="middle" font-size="8" fill="#AD1457">published automatically · no agent or sidecar</text>
+  <text x="672" y="570" font-size="8.5" fill="#555">• TaskGPUUtilization</text>
+  <text x="672" y="586" font-size="8.5" fill="#555">• TaskGPUMemoryUtilization</text>
+  <text x="672" y="602" font-size="8.5" fill="#555">• TaskGPUTemperature</text>
+  <text x="936" y="570" font-size="8.5" fill="#555">• TaskGPUPowerDraw</text>
+  <text x="936" y="586" font-size="8.5" fill="#555">• TaskGPURestartAppXidCount</text>
+  <text x="936" y="602" font-size="8.5" fill="#555">• InstanceGPUUsageTotal / Limit</text>
+  <line x1="672" y1="616" x2="1180" y2="616" stroke="#F8BBD0" stroke-width="1"/>
+  <text x="672" y="634" font-size="8.5" font-weight="bold" fill="#C2185B">Alarms → SNS:</text>
+  <text x="672" y="650" font-size="8.5" fill="#555">• GPU temperature &gt; 90°C</text>
+  <text x="672" y="666" font-size="8.5" fill="#555">• XID error count &gt; 0  (early warning before auto repair)</text>
+  <text x="672" y="682" font-size="8.5" fill="#555">• DLQ depth &gt; 0</text>
+
+  <!-- Health events block -->
+  <rect x="652" y="718" width="548" height="200" rx="8" fill="#F3E5F5" stroke="#7B2F8E" stroke-width="1.2"/>
+  <text x="926" y="738" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#6A1B9A">Health-change events</text>
+  <text x="672" y="758" font-size="8.5" fill="#555">ECS “Container Instance Health Change” event</text>
+  <rect x="672" y="766" width="230" height="22" rx="5" fill="#EDE7F6" stroke="#7B2F8E" stroke-width="1"/>
+  <text x="787" y="781" text-anchor="middle" font-size="8.5" font-weight="bold" fill="#6A1B9A">detail.overallStatus = IMPAIRED</text>
+  <text x="672" y="808" font-size="8.5" fill="#6A1B9A">→ EventBridge rule (ecs-&lt;stack&gt;-container-instance-health)</text>
+  <text x="672" y="826" font-size="8.5" fill="#555">→ CloudWatch Logs (/ecs/&lt;stack&gt;/container-instance-health)</text>
+  <text x="672" y="844" font-size="8.5" fill="#555">→ SNS alarm topic</text>
+  <rect x="672" y="856" width="512" height="44" rx="6" fill="#FFEBEE" stroke="#D32F2F" stroke-width="1"/>
+  <text x="682" y="873" font-size="8" fill="#555">detail.healthChecks[]:  type = ACCELERATED_COMPUTE · status = IMPAIRED</text>
+  <text x="682" y="889" font-size="8.5" font-weight="bold" fill="#D32F2F">statusReason = "XID_79"   ← reliable place to read the XID code</text>
+
+  <!-- ======================= Legend ======================= -->
+  <text x="24" y="962" font-size="9" font-weight="bold" fill="#232F3E">Flow:</text>
+  <line x1="66" y1="958" x2="90" y2="958" stroke="#D32F2F" stroke-width="2.4" marker-end="url(#arrow-red)"/>
+  <text x="94" y="962" font-size="8.5" fill="#555">① inject</text>
+  <line x1="150" y1="958" x2="174" y2="958" stroke="#E65100" stroke-width="2.4" marker-end="url(#arrow-orange)"/>
+  <text x="178" y="962" font-size="8.5" fill="#555">③ detect</text>
+  <line x1="238" y1="958" x2="262" y2="958" stroke="#2E7D32" stroke-width="2.4" marker-end="url(#arrow-green)"/>
+  <text x="266" y="962" font-size="8.5" fill="#555">④–⑤ repair (start-before-stop)</text>
+  <line x1="452" y1="958" x2="476" y2="958" stroke="#999" stroke-width="2.4" marker-end="url(#arrow-gray)"/>
+  <text x="480" y="962" font-size="8.5" fill="#555">⑥ terminate</text>
+  <line x1="566" y1="958" x2="590" y2="958" stroke="#E7157B" stroke-width="2.4" stroke-dasharray="5,3" marker-end="url(#arrow-pink)"/>
+  <text x="594" y="962" font-size="8.5" fill="#555">GPU metrics → CloudWatch</text>
+  <line x1="760" y1="958" x2="784" y2="958" stroke="#7B2F8E" stroke-width="2.4" stroke-dasharray="5,3" marker-end="url(#arrow-purple)"/>
+  <text x="788" y="962" font-size="8.5" fill="#555">health events → EventBridge / Logs / SNS</text>
+</svg>
