@@ -22,7 +22,7 @@ Production-ready, dual-tier GPU inference pipeline on Amazon ECS Managed Instanc
 - **Intelligent routing**  Router Lambda classifies requests to the right-sized model tier (heuristic + optional Bedrock classification for ambiguous cases)
 - **Scale-to-zero**  no GPU instances running when queues are empty; ECS MI terminates idle instances automatically
 - **Independent scaling**  each tier has its own capacity provider, scaling metric, and alarms
-- **GPU auto-repair**  ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances (XID errors 48, 74, 79, 95, 140)
+- **GPU auto-repair**  ECS monitors NVIDIA GPU health via DCGM and auto-replaces impaired instances (XID errors 48, 74, 79, 95, 140) — [demo](demos/gpu-auto-repair/README.md)
 - **Deployment circuit breaker**  automatically rolls back failed deployments on both services
 - **Composite scaling metric**  `max(queueDepth/threshold, gpuUtilization/80)` per tier
 - **Idempotent processing**  checks for existing results in S3 before running inference
@@ -357,6 +357,10 @@ The auto-repair workflow follows a start-before-stop pattern:
 
 Rate limit: at most 20% of instances in a capacity provider (minimum 1) can be drained simultaneously.
 
+Both capacity providers ship with auto-repair enabled (`AutoRepairConfiguration.ActionsStatus: ENABLED`), and the stack includes an EventBridge rule that records `ECS Container Instance Health Change` events (GPU XID impairments) to CloudWatch Logs and the SNS alarm topic.
+
+**Seeing it in action:** the [`demos/gpu-auto-repair/`](demos/gpu-auto-repair/README.md) demo injects a synthetic NVIDIA XID into the host DCGM engine so you can watch the full detect → drain → replace cycle without waiting for real hardware to fail. The injector runs the host's own `dcgmi` via `chroot /proc/1/root` (enabled by `pidMode: host` + `privileged`) against the host `nv-hostengine` unix socket — no NVIDIA image or DCGM version matching required. On a live g6e.xlarge cluster, injecting XID 79 marked the instance `IMPAIRED` in ~2 minutes and completed the start-before-stop replacement in ~8 minutes.
+
 ## GPU Metrics and Observability
 
 Metrics are published to CloudWatch Container Insights automatically, no agent installation or sidecar required:
@@ -385,7 +389,7 @@ Three CloudWatch Alarms protect the pipeline:
 - **Container registry**  ECR repository with lifecycle policy (keep 5 tagged, expire untagged after 7 days)
 - **IAM**  Task execution role, small task role, large task role, router role, infrastructure role, instance profile
 - **Autoscaling** 2 Lambda-based composite metrics (1-min schedule), 2 sets of step scaling policies and alarms
-- **Observability**  2 log groups, CloudWatch dashboard (4 sections), GPU temperature alarm, XID alarm, DLQ alarm, SNS topic
+- **Observability**  3 log groups, CloudWatch dashboard (4 sections), GPU temperature alarm, XID alarm, DLQ alarm, SNS topic, container-instance health EventBridge rule (GPU auto-repair events → Logs + SNS)
 
 ## Request / Response Format
 
