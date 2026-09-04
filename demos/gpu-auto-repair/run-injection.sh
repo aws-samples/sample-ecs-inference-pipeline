@@ -4,11 +4,13 @@
 # Managed Instances container instance to demonstrate GPU auto repair.
 #
 # It registers the xid-inject task definition and runs it on a GPU container
-# instance via the GPU capacity provider. The task bind-mounts the host's DCGM
-# socket directory (/run/nvidia-dcgm) and uses DCGM's error-injection framework
-# (dcgmi test --inject -f 230 --host unix:///hostdcgm/nv-hostengine) to write a
-# synthetic XID into the SAME nv-hostengine the ECS agent's GPU health monitor
-# reads. No real hardware fault is required.
+# instance via the GPU capacity provider. The task runs the host's own dcgmi
+# through the host init's root filesystem (chroot /proc/1/root, enabled by
+# pidMode: host + privileged) and uses DCGM's error-injection framework
+# (dcgmi test --inject -f 230 --host unix:///run/nvidia-dcgm/nv-hostengine) to
+# write a synthetic XID into the SAME nv-hostengine the ECS agent's GPU health
+# monitor reads. No real hardware fault is required, and no NVIDIA image or
+# DCGM-version matching is needed since it uses whatever dcgmi the AMI ships.
 #
 # One critical XID on one GPU is a complete repair test: ACCELERATED_COMPUTE is
 # an instance-level health check, so the first critical XID marks the whole
@@ -118,4 +120,4 @@ echo ""
 echo "On-demand injection (task idles for 1h) via ECS Exec:"
 echo "  aws ecs execute-command --cluster ${CLUSTER} --task ${TASK_ARN} \\"
 echo "    --container xid-inject --interactive \\"
-echo "    --command \"dcgmi test --inject --gpuid 0 -f 230 -v 74 --host unix:///hostdcgm/nv-hostengine\" --region ${AWS_REGION}"
+echo "    --command \"chroot /proc/1/root /usr/bin/dcgmi test --host unix:///run/nvidia-dcgm/nv-hostengine --inject --gpuid 0 -f 230 -v 74\" --region ${AWS_REGION}"
