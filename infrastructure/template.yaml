@@ -963,6 +963,89 @@ Resources:
           Value: !Ref CostAllocationTagProject
 
   #############################################
+  # CodeBuild project for the container image
+  # Builds container/ (uploaded to s3://${AWS::StackName}-cfn-${AWS::Region}/container-source.zip)
+  # and pushes to the ECR repository above. Triggered by:
+  #   aws codebuild start-build --project-name ${STACK_NAME}-build
+  #############################################
+
+  ContainerBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-build-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ContainerBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-build'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}-build:*'
+              - Sid: EcrAuthToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPushToInferenceRepo
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !GetAtt InferenceECRRepository.Arn
+              - Sid: ReadBuildSource
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${AWS::StackName}-cfn-${AWS::Region}/container-source.zip'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-build-role'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  ContainerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${AWS::StackName}-build'
+      Description: Builds and pushes the vLLM inference container image to ECR
+      ServiceRole: !GetAtt ContainerBuildRole.Arn
+      Source:
+        Type: S3
+        Location: !Sub '${AWS::StackName}-cfn-${AWS::Region}/container-source.zip'
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ECR_REPO_URI
+            Value: !GetAtt InferenceECRRepository.RepositoryUri
+      TimeoutInMinutes: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-build'
+        - Key: Project
+          Value: !Ref CostAllocationTagProject
+
+  #############################################
   # CloudWatch Log Group
   #############################################
 
@@ -2046,6 +2129,9 @@ Resources:
           Arn: !Ref AlarmNotificationTopic
 
 Outputs:
+  ClusterName:
+    Description: ECS Cluster name for service deployments
+    Value: !Ref ECSCluster
   ClusterArn:
     Description: ECS Cluster ARN for service deployments
     Value: !GetAtt ECSCluster.Arn

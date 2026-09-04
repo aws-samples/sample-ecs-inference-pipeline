@@ -162,9 +162,17 @@ The container is based on `vllm/vllm-openai:v0.26.0` (pinned). All dependencies 
 
 **Option A CodeBuild (recommended for the ~8 GB image):**
 
+The stack provisions a CodeBuild project (`${STACK_NAME}-build`) whose source is the
+`container-source.zip` object in the `${STACK_NAME}-cfn-${AWS_REGION}` bucket (created in Step 2).
+Package the `container/` directory and upload it to that key **before** starting the build — the
+build fails if the source object is missing:
+
 ```bash
+# Package and upload the build source (buildspec.yml must be at the zip root)
 cd container && zip -r /tmp/container-source.zip . && cd ..
 aws s3 cp /tmp/container-source.zip s3://${STACK_NAME}-cfn-${AWS_REGION}/container-source.zip
+
+# Trigger the build (pushes :latest and :v2.0.0 to ECR)
 aws codebuild start-build --project-name ${STACK_NAME}-build --region $AWS_REGION
 ```
 
@@ -188,7 +196,7 @@ SMALL_SVC=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
 LARGE_SVC=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
   --query 'Stacks[0].Outputs[?OutputKey==`LargeModelServiceName`].OutputValue' --output text)
 CLUSTER=$(aws cloudformation describe-stacks --stack-name $STACK_NAME \
-  --query 'Stacks[0].Outputs[?OutputKey==`ClusterArn`].OutputValue' --output text)
+  --query 'Stacks[0].Outputs[?OutputKey==`ClusterName`].OutputValue' --output text)
 
 aws ecs update-service --cluster $CLUSTER --service $SMALL_SVC --force-new-deployment --region $AWS_REGION
 aws ecs update-service --cluster $CLUSTER --service $LARGE_SVC --force-new-deployment --region $AWS_REGION
