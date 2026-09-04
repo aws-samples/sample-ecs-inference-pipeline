@@ -59,7 +59,16 @@ ManagedInstancesProvider:
 
 ECS marks the instance impaired and replaces it for these XIDs (see the doc above for the full
 table): `46, 48, 54, 62, 64, 74, 79, 95, 109, 110, 136, 140, 142, 143, 151, 155, 156, 158`.
-`79` (GPU fell off the bus) is the default used here and lines up with the EKS sample.
+
+Common ones to inject:
+
+| XID | Meaning | Used by |
+|---|---|---|
+| `48` | Double-bit ECC error | ECS service team's E2E test default |
+| `79` | GPU fell off the bus | This demo's default (matches the EKS sample) |
+| `74` | NVLink error | Alternate example |
+
+Both `48` and `79` are on the agent's allowlist and equally valid; the demo defaults to `79`.
 
 ## Injection method
 
@@ -129,6 +138,8 @@ cd demos/gpu-auto-repair
 
 # Inject XID 79 on GPU 0 of a GPU container instance (the capacity provider picks which).
 ./run-injection.sh 79 0
+# or use the service team's test default (double-bit ECC):
+# ./run-injection.sh 48 0
 ```
 
 `run-injection.sh` resolves the stack's task/execution roles, grants the task role the
@@ -234,12 +245,13 @@ aws ecs execute-command \
   --task <injector-task-arn> \
   --container xid-inject \
   --interactive \
-  --command "chroot /proc/1/root /usr/bin/dcgmi test --host unix:///run/nvidia-dcgm/nv-hostengine --inject --gpuid 0 -f 230 -v 74" \
+  --command "chroot /proc/1/root /usr/bin/dcgmi test --host unix:///run/nvidia-dcgm/nv-hostengine --inject --gpuid 0 -f 230 -v 48" \
   --region $AWS_REGION
 ```
 
-Use this to exercise different codes (for example `74` NVLink error, also a Replace). ECS Exec
-requires the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+Swap `-v 48` for any allowlisted code — for example `48` (double-bit ECC, the service team's
+test default), `79` (GPU fell off the bus), or `74` (NVLink error). ECS Exec requires the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
 installed locally.
 
 ## Cleanup
