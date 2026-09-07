@@ -1,16 +1,53 @@
 # GPU Auto-Repair Demo (XID Fault Injection)
 
-Showcase Amazon ECS Managed Instances **GPU auto repair** in action by simulating an
-NVIDIA XID error, no real hardware fault required. This is the ECS analogue of the
-EKS [`xid-injection`](https://github.com/aws-samples/sample-eks-docs/tree/main/ai-ml/manifests/xid-injection)
-sample: instead of injecting into a node monitoring agent from a `hostNetwork` pod, we
-inject into the host's DCGM `nv-hostengine` from an ECS task and let the ECS agent's GPU health
-monitor pick it up.
+## Introduction
 
-> **Verified end-to-end** on a live g6e.xlarge (NVIDIA L40S) Managed Instances cluster:
-> injecting XID 79 marked the instance `IMPAIRED` (`XID_79`) in ~2 minutes, and auto repair
-> drained it, launched a replacement (start-before-stop), and terminated the impaired instance
-> — full cycle ~8 minutes. See [Verified result](#verified-result).
+GPUs fail in ways CPUs rarely do: a card falls off the PCIe bus, throws a double-bit ECC error,
+or drops an NVLink connection mid-inference. On Amazon ECS Managed Instances, **GPU auto repair**
+handles these failures for you — ECS watches GPU health through NVIDIA DCGM, marks a card's
+instance `IMPAIRED` when a critical fault appears, and replaces it automatically. This demo lets
+you see that whole cycle on demand, without waiting for real hardware to break: it injects a
+synthetic NVIDIA XID error into a running GPU instance and shows ECS detect, drain, and replace
+it. It is the ECS analogue of the EKS
+[`xid-injection`](https://github.com/aws-samples/sample-eks-docs/tree/main/ai-ml/manifests/xid-injection)
+sample — rather than injecting into a node monitoring agent from a `hostNetwork` pod, it injects
+into the host's DCGM `nv-hostengine` from an ECS task and lets the ECS agent's GPU health monitor
+pick it up.
+
+> **Verified end-to-end** on a live g6.2xlarge (NVIDIA L4) Managed Instances cluster:
+> injecting XID 79 marked the instance `IMPAIRED` (`XID_79`) in under 2 minutes, and auto repair
+> drained it, brought up a replacement (start-before-stop), and terminated the impaired instance
+> — full cycle ~7 minutes. See [Verified result](#verified-result).
+
+## Setup
+
+This demo builds on the stack deployed by the [repo root README](../../README.md) and does not
+provision GPU capacity of its own. Before running it, make sure that stack is up: the
+`${STACK_NAME}-cluster` cluster and its GPU Managed Instances capacity providers (both with
+`autoRepairConfiguration.actionsStatus = ENABLED`) already exist, at least one GPU container
+instance is `ACTIVE`, and your shell exports `AWS_REGION` and `STACK_NAME`. If you are pointing
+at a cluster that was **not** created by this template, run the standalone `setup-health-events.sh`
+(with `health-events-rule.json`) first so the health-change events this demo reads are captured.
+
+> **Keeping a GPU instance alive for the test.** This stack scales to zero: when the queues are
+> empty the composite scaling metric sits at 0, so a plain `update-service --desired-count 1` gets
+> reverted to 0 by the scale-in alarm within seconds and the instance you just provisioned is
+> deregistered before you can inject. Pin a floor on the autoscaling target instead, then let the
+> capacity provider bring up an instance:
+>
+> ```bash
+> CLUSTER=${STACK_NAME}-cluster
+> SVC=${STACK_NAME}-inference-service
+> aws application-autoscaling register-scalable-target \
+>   --service-namespace ecs \
+>   --resource-id "service/${CLUSTER}/${SVC}" \
+>   --scalable-dimension ecs:service:DesiredCount \
+>   --min-capacity 1 --max-capacity 10 --region "$AWS_REGION"
+> ```
+>
+> Wait until a container instance reports `overallStatus = OK` **and** `ACCELERATED_COMPUTE = OK`
+> (DCGM healthy) before injecting. When you are done, set `--min-capacity` back to `0` (or just
+> delete the stack) so the fleet can scale to zero again.
 
 ## Architecture
 
@@ -27,11 +64,7 @@ References:
 - [Monitor Amazon ECS container instance health](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/container-instance-health.html)
 - [`AutoRepairConfiguration` API](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_AutoRepairConfiguration.html)
 
-> This demo builds on the stack deployed by the repo root README. It assumes the
-> `${STACK_NAME}-cluster` cluster and its GPU Managed Instances capacity providers already
-> exist and that at least one GPU container instance is running.
-
-## Background: how ECS detects GPU faults and repairs instances
+## How ECS GPU auto repair works
 
 Amazon ECS uses the NVIDIA Data Center GPU Manager (**DCGM**) to monitor GPU health on
 Managed Instances. When DCGM reports a critical GPU failure, the ECS agent surfaces it as an
@@ -229,20 +262,24 @@ then settles back once the old instance is gone.
 
 ## Verified result
 
-Run against a live `gpu-inference-ecs-gpu-inference-capacity` provider (g6e.xlarge, 1× NVIDIA
-L40S, 10 instances), injecting `XID 79`:
+Run against a live `gpu-inference-ecs-gpu-inference-capacity` provider (g6.2xlarge, 1× NVIDIA
+L4, in `us-west-2b`), injecting `XID 79` on instance `i-0533e9a7d5b127ecd`:
 
-| Time (UTC) | Event | Fleet size |
-|---|---|---|
-| 06:06:15 | `dcgmi test --inject -f 230 -v 79` → `Successfully injected field info.` | 10 |
-| 06:08:16 | ECS marks the instance `IMPAIRED` (`ACCELERATED_COMPUTE`) | 10 |
-| 06:07:57 | EventBridge health event logged with `"statusReason":"XID_79"` | 10 |
-| 06:09:25 | Instance → `DRAINING` (auto repair begins) | 10 |
-| 06:10:19 | Replacement instance provisioned (start-before-stop) | 11 |
-| 06:17:27 | Tasks fully drained (2 → 0) | 11 |
-| 06:17:55 | Impaired instance terminated; fleet self-healed | 10 |
+| Time (UTC) | Event |
+|---|---|
+| 03:30:36 | `dcgmi test --inject -f 230 -v 79` → `Successfully injected field info.` / `INJECT_OK` |
+| 03:32:01 | EventBridge health event logged with `XID_79` for the injected instance |
+| 03:32:23 | ECS marks the instance `IMPAIRED` (`ACCELERATED_COMPUTE = IMPAIRED`) |
+| 03:33:43 | Instance → `DRAINING` (auto repair begins) |
+| 03:41:54 | Healthy replacement instance(s) `ACTIVE`/`OK` while the impaired one still drains (start-before-stop) |
+| 03:43:44 | Impaired instance deregistered and `shutting-down`; fleet self-healed |
 
-Detection ≈ 2 minutes after injection; full repair ≈ 8 minutes after `IMPAIRED`.
+Detection ≈ 2 minutes after injection (here ~1 min 47 s); full repair ≈ 7 minutes after injection.
+
+> `g6e.xlarge`/`g6e.2xlarge` hit `InsufficientInstanceCapacity` across the `us-west-2` AZs this
+> stack's subnets live in, so the run landed on a `g6.2xlarge` (NVIDIA L4) — one of the widened
+> single-GPU instance types. Auto repair behaves identically regardless of which allowed GPU type
+> the capacity provider picks; `ACCELERATED_COMPUTE` is an instance-level health check.
 
 ## On-demand injection (fire more XIDs without re-running)
 
