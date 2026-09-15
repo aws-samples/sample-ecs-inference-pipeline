@@ -365,6 +365,8 @@ The auto-repair workflow follows a start-before-stop pattern:
 
 Rate limit: at most 20% of instances in a capacity provider (minimum 1) can be drained simultaneously.
 
+Because the replacement instance is provisioned fresh, it must re-pull the container image and reload the model before it can serve, which dominates recovery time. For strategies to minimize model re-pull time, see the [ecs-gpu-auto-repair README](demos/gpu-auto-repair/README.md#minimizing-model-re-pull-time-on-replacement).
+
 Both capacity providers ship with auto-repair enabled (`AutoRepairConfiguration.ActionsStatus: ENABLED`), and the stack includes an EventBridge rule that records `ECS Container Instance Health Change` events (GPU XID impairments) to CloudWatch Logs and the SNS alarm topic.
 
 **Seeing it in action:** the [`demos/gpu-auto-repair/`](demos/gpu-auto-repair/README.md) demo injects a synthetic NVIDIA XID into the host DCGM engine so you can watch the full detect → drain → replace cycle without waiting for real hardware to fail. The injector runs the host's own `dcgmi` via `chroot /proc/1/root` (enabled by `pidMode: host` + `privileged`) against the host `nv-hostengine` unix socket — no NVIDIA image or DCGM version matching required. On a live g6e.xlarge cluster, injecting XID 79 marked the instance `IMPAIRED` in ~2 minutes and completed the start-before-stop replacement in ~8 minutes.

@@ -113,6 +113,39 @@ Common ones to inject:
 
 Both `48` and `79` are on the agent's allowlist and equally valid; the demo defaults to `79`.
 
+## Minimizing model re-pull time on replacement
+
+Auto repair replaces an impaired instance with a **fresh** one, so the replacement starts with an
+empty local disk. Before it can serve inference again it has to (1) pull the container image and
+(2) load the model weights. For this stack that is the slow part of recovery: the vLLM image is
+~8.9 GB and the model is downloaded from HuggingFace at runtime by default, so a naive replacement
+can spend several minutes pulling before the new task is healthy — which is why the observed
+"full repair" time is dominated by image pull and model load, not by ECS's detect/drain logic.
+
+Strategies to cut that re-pull time, roughly in order of impact:
+
+- **Pre-cache the model on S3 instead of HuggingFace.** Set `MODEL_S3_PATH` / `LargeModelS3Path`
+  to an `s3://` URI (see the root README Step 1) so the replacement pulls weights from S3 over the
+  in-VPC S3 gateway endpoint rather than downloading from HuggingFace over the NAT gateway. S3 in
+  the same Region is faster, cheaper (no NAT egress), and not rate-limited.
+- **Keep a warm floor of instances.** With `MinCapacity ≥ 1` (or a small `Base` in the capacity
+  provider strategy) the fleet keeps a running instance whose disk already holds the image and
+  model, so the *start-before-stop* replacement overlaps with a still-serving warm instance and
+  users see little or no gap. Scale-to-zero trades this warmth for cost.
+- **Slim the image.** The image pull scales with size: pin only the CUDA/vLLM runtime you need,
+  drop build tooling, and use multi-stage builds. A smaller image on ECR (pulled over the ECR VPC
+  endpoints this stack provisions) reaches `RUNNING` faster on every replacement.
+- **Rely on ECR VPC-endpoint + S3 gateway locality.** The stack already routes ECR (`ecr.api`,
+  `ecr.dkr`) and S3 through VPC endpoints, so image and (S3-hosted) model traffic stays on the AWS
+  backbone. Keeping model artifacts in the same Region as the cluster preserves that advantage.
+- **Raise the health-check start period if needed.** `HealthCheckGracePeriodSeconds` /
+  container `startPeriod` must comfortably exceed the pull-plus-load time so the deployment circuit
+  breaker doesn't roll back a replacement that is simply still warming up.
+
+> The auto-repair *mechanism* is unaffected by any of this — detection and draining happen at the
+> instance/DCGM level regardless of image size. These strategies only shorten how long the fresh
+> replacement takes to start serving again.
+
 ## Injection method
 
 DCGM exposes an error-injection framework. Writing a synthetic value into DCGM **field 230**
