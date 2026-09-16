@@ -46,37 +46,38 @@ def _make_cfn_constructor(tag_name):
     return constructor
 
 
-def _get_cfn_loader():
-    """Create a YAML loader that handles CloudFormation intrinsic functions."""
-    loader = type("CfnLoader", (yaml.SafeLoader,), {})
-    cfn_tags = {
-        "!Ref": "Ref",
-        "!Sub": "Sub",
-        "!GetAtt": "GetAtt",
-        "!Select": "Select",
-        "!Split": "Split",
-        "!Join": "Join",
-        "!FindInMap": "FindInMap",
-        "!If": "If",
-        "!Equals": "Equals",
-        "!Not": "Not",
-        "!And": "And",
-        "!Or": "Or",
-        "!GetAZs": "GetAZs",
-        "!ImportValue": "ImportValue",
-        "!Condition": "Condition",
-        "!Base64": "Base64",
-        "!Cidr": "Cidr",
-    }
-    for yaml_tag, name in cfn_tags.items():
-        loader.add_constructor(yaml_tag, _make_cfn_constructor(name))
-    return loader
+_CFN_TAGS = {
+    "!Ref": "Ref",
+    "!Sub": "Sub",
+    "!GetAtt": "GetAtt",
+    "!Select": "Select",
+    "!Split": "Split",
+    "!Join": "Join",
+    "!FindInMap": "FindInMap",
+    "!If": "If",
+    "!Equals": "Equals",
+    "!Not": "Not",
+    "!And": "And",
+    "!Or": "Or",
+    "!GetAZs": "GetAZs",
+    "!ImportValue": "ImportValue",
+    "!Condition": "Condition",
+    "!Base64": "Base64",
+    "!Cidr": "Cidr",
+}
+
+# Register the CloudFormation intrinsic-function tags on yaml.SafeLoader so the
+# template can be parsed with yaml.safe_load(). Each constructor only builds a
+# plain CfnTag object, so parsing untrusted YAML never constructs arbitrary
+# Python objects (no unsafe yaml.load / FullLoader is used anywhere).
+for _yaml_tag, _name in _CFN_TAGS.items():
+    yaml.SafeLoader.add_constructor(_yaml_tag, _make_cfn_constructor(_name))
 
 
 def load_template():
-    """Load and parse the CloudFormation template."""
+    """Load and parse the CloudFormation template using yaml.safe_load()."""
     with open(TEMPLATE_PATH, "r") as f:
-        return yaml.load(f, Loader=_get_cfn_loader())
+        return yaml.safe_load(f)
 
 
 def get_resource(template, logical_id):
