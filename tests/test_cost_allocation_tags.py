@@ -49,23 +49,23 @@ def _cfn_constructor(loader, tag_suffix, node):
     return None
 
 
-def _get_cfn_loader():
-    """Create a YAML loader that handles CloudFormation intrinsic functions."""
-    loader = yaml.SafeLoader
-    cfn_tags = [
-        "!Ref", "!Sub", "!GetAtt", "!Select", "!Split", "!Join",
-        "!FindInMap", "!If", "!Equals", "!Not", "!And", "!Or",
-        "!GetAZs", "!ImportValue", "!Condition", "!Base64", "!Cidr",
-    ]
-    for tag in cfn_tags:
-        yaml.add_multi_constructor(tag, _cfn_constructor, Loader=loader)
-    return loader
+# Register the CloudFormation intrinsic-function tags on yaml.SafeLoader so the
+# template can be parsed with yaml.safe_load(). The constructor only builds
+# plain Python values, so parsing untrusted YAML never constructs arbitrary
+# objects (no unsafe yaml.load / FullLoader is used anywhere).
+_CFN_TAGS = [
+    "!Ref", "!Sub", "!GetAtt", "!Select", "!Split", "!Join",
+    "!FindInMap", "!If", "!Equals", "!Not", "!And", "!Or",
+    "!GetAZs", "!ImportValue", "!Condition", "!Base64", "!Cidr",
+]
+for _tag in _CFN_TAGS:
+    yaml.add_multi_constructor(_tag, _cfn_constructor, Loader=yaml.SafeLoader)
 
 
 def load_template():
-    """Load and parse the CloudFormation template."""
+    """Load and parse the CloudFormation template using yaml.safe_load()."""
     with open(TEMPLATE_PATH, "r") as f:
-        return yaml.load(f, Loader=_get_cfn_loader())
+        return yaml.safe_load(f)
 
 
 def get_taggable_resources(template):
