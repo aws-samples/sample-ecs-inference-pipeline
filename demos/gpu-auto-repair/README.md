@@ -184,8 +184,12 @@ On ECS there is no `kubectl`, so the injector is delivered as an ECS task:
   host`, `pidMode: host`, `privileged: true`. The command `sleep 60` first (so the agent's health
   monitor connects to DCGM before the fault lands), injects one XID via the chroot path, then
   idles (`sleep 3600`) so it doubles as a live injection client via ECS Exec.
-  - It reserves **no GPU and no CPU** (`cpu: 0`). GPU instances here are already fully packed by
-    the inference task, so requesting a GPU or CPU would leave the injector stuck `PENDING`.
+  - It reserves **no GPU and no CPU**: `cpu: 0` is set on the **container definition**
+    (`containerDefinitions[].cpu`), and the task definition has no task-level `cpu`. ECS rejects a
+    task-level `cpu` of `0` with `Invalid 'cpu' setting for task`, so if you build your own
+    injector task definition, keep the zero reservation at the container level. GPU instances here
+    are already fully packed by the inference task, so requesting a GPU or CPU would leave the
+    injector stuck `PENDING`.
     `dcgmi` talks to the host engine over the socket and does not need its own GPU reservation.
     (The service team's test reserves `GPU: 1` instead, but only because it provisions a
     dedicated instance rather than co-locating.)
@@ -275,6 +279,49 @@ stack's SNS alarm topic. So the fault and the repair activity are recorded autom
 aws logs tail /ecs/${STACK_NAME}/container-instance-health --follow --region $AWS_REGION
 ```
 
+When a GPU hardware failure is detected, ECS publishes an `ECS Container Instance Health
+Change` event identifying the affected container instance and its impaired GPU health status.
+The following is a representative `ACCELERATED_COMPUTE` event from the stack's
+`container-instance-health` CloudWatch Logs group after injecting `XID 79` (account ID, instance
+ID, and other identifiers replaced with placeholders) — note the XID code carried in the
+`statusReason`:
+
+```json
+{
+    "version": "0",
+    "id": "<event-id>",
+    "detail-type": "ECS Container Instance Health Change",
+    "source": "aws.ecs",
+    "account": "<account-id>",
+    "time": "<event-time>",
+    "region": "<region>",
+    "resources": [
+        "arn:aws:ecs:<region>:<account-id>:container-instance/<cluster-name>/<container-instance-id>"
+    ],
+    "detail": {
+        "clusterArn": "arn:aws:ecs:<region>:<account-id>:cluster/<cluster-name>",
+        "containerInstanceArn": "arn:aws:ecs:<region>:<account-id>:container-instance/<cluster-name>/<container-instance-id>",
+        "capacityProviderName": "<capacity-provider-name>",
+        "ec2InstanceId": "<instance-id>",
+        "overallStatus": "IMPAIRED",
+        "healthChecks": [
+            {
+                "type": "ACCELERATED_COMPUTE",
+                "status": "IMPAIRED",
+                "lastStatusChange": "<last-status-change-time>",
+                "lastUpdated": "<last-updated-time>",
+                "statusReason": "XID_79"
+            }
+        ]
+    }
+}
+```
+
+The EventBridge rule pattern (`source: aws.ecs`, `detail-type: ECS Container Instance Health
+Change`, `detail.overallStatus: IMPAIRED`) matches on this event, which is why the XID code
+surfaces reliably here even though `DescribeContainerInstances` leaves the
+`ACCELERATED_COMPUTE` `statusReason` empty.
+
 > If you are running against a cluster **not** created by this template, use the standalone
 > `setup-health-events.sh` (and `health-events-rule.json`) instead — it creates an equivalent
 > rule + log group on its own.
@@ -292,6 +339,17 @@ OK  ->  IMPAIRED (XID_79)  ->  DRAINING  ->  (instance terminated)
 During the `DRAINING` window the total instance count briefly rises (e.g. 10 → 11) because ECS
 provisions the replacement **before** terminating the impaired instance (start-before-stop),
 then settles back once the old instance is gone.
+
+> **Stop the injector once the instance is `DRAINING`.** Draining only moves *service* tasks
+> off the instance; it does not stop standalone tasks. The injector is a standalone `run-task`
+> that idles for an hour (`sleep 3600`), so it keeps the impaired instance alive until it exits,
+> and ECS cannot terminate the instance while it's running. After you see `DRAINING` (and have
+> fired any extra XIDs you want via ECS Exec), stop it:
+>
+> ```bash
+> aws ecs stop-task --cluster ${STACK_NAME}-cluster --task <injector-task-arn> \
+>   --reason "XID injection test complete" --region $AWS_REGION
+> ```
 
 ## Verified result
 
@@ -337,7 +395,7 @@ installed locally.
 ## Cleanup
 
 ```bash
-# Stop the injector task if it is still idling
+# Stop the injector task if it is still idling (it blocks termination of the drained instance)
 aws ecs stop-task --cluster ${STACK_NAME}-cluster --task <injector-task-arn> --region $AWS_REGION
 
 # The EventBridge rule + health log group ship with the stack and are removed when
