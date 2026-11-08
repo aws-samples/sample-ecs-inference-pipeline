@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 import boto3
 import requests
 
+import telemetry
+
 # --- Configuration ---
 REQUEST_QUEUE_URL = os.environ.get("REQUEST_QUEUE_URL", "")
 DLQ_URL = os.environ.get("DLQ_URL", "")
@@ -31,18 +33,69 @@ LONG_POLL_WAIT_SECONDS = 20
 MAX_WRITE_RETRIES = 3
 INITIAL_BACKOFF_SECONDS = 1
 
+# SQS RedrivePolicy maxReceiveCount for the request queue. A processing failure on
+# this receive is the last one before SQS moves the message to the DLQ.
+MAX_RECEIVE_COUNT = int(os.environ.get("MAX_RECEIVE_COUNT", "3"))
+
+# SQS system attributes the worker needs for telemetry (enqueue time, attempt count).
+SQS_SYSTEM_ATTRIBUTES = ["ApproximateReceiveCount", "SentTimestamp"]
+
 # UUID v4 regex pattern
 UUID_V4_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout,
-)
+telemetry.configure_logging(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
+
+# One cold_start record per task, after the first successful inference.
+_cold_start = telemetry.ColdStartTracker()
+
+
+def _task_arn():
+    """Task ARN for result payloads: ECS_TASK_ARN if set, else the task metadata endpoint."""
+    if ECS_TASK_ARN and ECS_TASK_ARN != "unknown":
+        return ECS_TASK_ARN
+    try:
+        return telemetry.ecs_context().get("task_arn", "unknown")
+    except Exception:  # noqa: BLE001 - never fail a write over telemetry
+        return "unknown"
+
+
+def _emit_dead_letter(message, reason, reason_code, error, request_id=None):
+    """Emit a gpu_inference.dead_letter contract record. Never raises."""
+    try:
+        record = telemetry.dead_letter_record(
+            telemetry.ecs_context(), message, REQUEST_QUEUE_URL, reason, reason_code,
+            error, request_id=request_id,
+        )
+        telemetry.emit(record)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("telemetry: dead_letter emission failed: %s", e)
+
+
+def _emit_if_exhausted(message, request_id, reason_code, error):
+    """On the final permitted receive, record that SQS will dead-letter this message."""
+    attrs = message.get("Attributes") or {}
+    try:
+        receive_count = int(attrs.get("ApproximateReceiveCount", "0"))
+    except (TypeError, ValueError):
+        return
+    if receive_count >= MAX_RECEIVE_COUNT:
+        _emit_dead_letter(message, "processing_exhausted", reason_code, error, request_id)
+
+
+def _emit_cold_start(message, request_id, first_token_at):
+    """Emit the task's gpu_inference.cold_start record once. Never raises."""
+    if not _cold_start.pending:
+        return
+    try:
+        record = _cold_start.observe(telemetry.ecs_context(), message, request_id, first_token_at)
+        if record:
+            telemetry.emit(record)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("telemetry: cold_start emission failed: %s", e)
 
 
 def validate_message(body):
@@ -237,7 +290,7 @@ def write_result(result, request_id, processing_time_ms):
         "status": "success",
         "result": result,
         "processingTimeMs": processing_time_ms,
-        "taskArn": ECS_TASK_ARN,
+        "taskArn": _task_arn(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -304,6 +357,11 @@ def process_message(sqs_client, message):
             QueueUrl=REQUEST_QUEUE_URL,
             ReceiptHandle=receipt_handle,
         )
+        reason_code = telemetry.malformed_reason_code(error)
+        if reason_code:
+            _emit_dead_letter(message, "malformed_input", reason_code, error)
+        else:
+            logger.warning("telemetry: no contract reason_code for validation error: %s", error)
         return
 
     request_id = parsed["requestId"]
@@ -322,14 +380,17 @@ def process_message(sqs_client, message):
         result, processing_time_ms = forward_to_vllm(parsed)
     except Exception as e:
         logger.error("vLLM inference failed for requestId=%s: %s", request_id, e)
+        _emit_if_exhausted(message, request_id, "inference_failed", e)
         # Let visibility timeout return message to queue for retry
         return
+    _emit_cold_start(message, request_id, telemetry.now_utc())
 
     # Step 4: Write result
     try:
         write_result(result, request_id, processing_time_ms)
     except Exception as e:
         logger.error("Output write failed for requestId=%s after retries: %s", request_id, e)
+        _emit_if_exhausted(message, request_id, "output_write_failed", e)
         # Let visibility timeout return message to queue for retry
         return
 
@@ -362,6 +423,7 @@ def poll_queue(sqs_client):
                 MaxNumberOfMessages=1,
                 WaitTimeSeconds=LONG_POLL_WAIT_SECONDS,
                 MessageAttributeNames=["All"],
+                AttributeNames=SQS_SYSTEM_ATTRIBUTES,
             )
 
             messages = response.get("Messages", [])

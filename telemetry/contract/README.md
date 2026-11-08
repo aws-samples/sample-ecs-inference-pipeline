@@ -160,19 +160,29 @@ Mechanics:
 
 ## Producer status
 
-Snapshot against the code as of contract 1.0.0. Producers aren't instrumented yet. This is the
-backlog for next step 2 (instrument the pipeline against the contract).
-
-| Event | Today | Gap to close |
+| Event | Producer | Where records land |
 |---|---|---|
-| gpu_impairment | The raw ECS health event lands verbatim in `/ecs/${STACK_NAME}/container-instance-health` (EventBridge rule, no input transformer) | No normalizer. XID only as the string `XID_<n>`. No task capture before repair. The rule doesn't filter on `ACCELERATED_COMPUTE`. |
-| dead_letter | Explicit path: `ErrorReason` (free text) and `OriginalQueue` (URL) message attributes. Redrive path: no attributes. | No reason discriminator or codes. No tier (only the queue URL/ARN). Worker doesn't request `ApproximateReceiveCount` / `SentTimestamp`. No record is emitted. |
-| cold_start | Untimestamped `echo` lines in `entrypoint.sh` | No stage timestamps. `ECS_TASK_ARN` is never set in either task definition (the worker logs `unknown`), so read it from `ECS_CONTAINER_METADATA_URI_V4`. No tier env var. |
+| `gpu_impairment` | `infrastructure/gpu_impairment_normalizer.py`, a Lambda targeted by the `${STACK_NAME}-container-instance-health` rule. It ignores non-`ACCELERATED_COMPUTE` impairments and runs `ListTasks` on the impaired instance before the drain. | `/aws/lambda/${STACK_NAME}-gpu-impairment-normalizer` (JSON line). Active tracing for Omni. |
+| `dead_letter` (`malformed_input`) | `container/sqs_worker.py`, after the explicit DLQ send. The existing `ErrorReason` / `OriginalQueue` attributes are unchanged. | Task log group (JSON line), plus OTLP to CloudWatch (Omni) |
+| `dead_letter` (`processing_exhausted`) | `container/sqs_worker.py`, on the failed attempt where `ApproximateReceiveCount` reaches `MAX_RECEIVE_COUNT` (3, matching the RedrivePolicy) | Same |
+| `cold_start` | `container/sqs_worker.py`, once per task after its first successful inference. Stages come from SQS `SentTimestamp`, `registeredAt`, `PullStoppedAt` (task metadata), `VLLM_READY_AT` (stamped by `entrypoint.sh`), and the vLLM response time. | Same |
 
-All worker logs today are plain text (`%(asctime)s [%(levelname)s] %(message)s`). Contract records
-need structured JSON output alongside the existing lines. Existing tests pin the DLQ message
-attributes (`ErrorReason`, `OriginalQueue`) and a single `send_message` call on the malformed
-path, so instrumentation should add fields, not replace them.
+The worker runs under `opentelemetry-instrument` with the CloudWatch plugin, in its own virtualenv
+(`/opt/worker-venv`, isolated from vLLM's own OpenTelemetry dependencies). It exports OTLP to a
+CloudWatch agent sidecar on `localhost:4318`. `tests/test_telemetry_instrumentation.py`
+validates every producer's records against these schemas.
+
+Known producer limits:
+
+- **`processing_exhausted` is emitted by the worker, so a worker that dies mid-request emits
+  nothing.** Examples are an OOM, or the instance being impaired. SQS still redrives the message,
+  so the DLQ depth alarm catches it, but no contract record is written.
+- **`cold_start` is skipped when the triggering request was enqueued after the task's image pull.**
+  The task was already warm for that request. It is also skipped when a stage can't be resolved,
+  for example if the task metadata endpoint or `DescribeContainerInstances` is unavailable.
+- **`gpu_impairment` omits `forensics.task_arns` when `ListTasks` fails.** Per CR-1, that
+  record doesn't conform, which marks the capture as missed. An XID outside the enum is
+  recorded as `cause: other`, so that XID needs a MINOR contract bump.
 
 ## Validating a record
 

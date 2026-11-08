@@ -71,9 +71,22 @@ if ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
     exit 1
 fi
 
+# Cold-start telemetry: the worker reports this as the weights_loaded stage
+# (first successful /health = weights in VRAM, server ready).
+VLLM_READY_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+export VLLM_READY_AT
+
 # --- Step 4: Start SQS worker ---
+# The worker runs from its own virtualenv so its OpenTelemetry packages cannot conflict
+# with the ones vLLM depends on. opentelemetry-instrument exports traces, metrics and
+# logs over OTLP to the CloudWatch agent sidecar (OTEL_* variables in the task
+# definition). Without the venv (e.g. a custom image), fall back to the plain worker.
 echo "Starting SQS worker..."
-python3 /app/sqs_worker.py &
+if [ -x /opt/worker-venv/bin/opentelemetry-instrument ]; then
+    /opt/worker-venv/bin/opentelemetry-instrument /opt/worker-venv/bin/python /app/sqs_worker.py &
+else
+    python3 /app/sqs_worker.py &
+fi
 WORKER_PID=$!
 
 # Wait for either process to exit
