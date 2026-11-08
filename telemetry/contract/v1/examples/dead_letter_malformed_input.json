@@ -1,0 +1,25 @@
+{
+  "contract_version": "1.0.0",
+  "event_name": "gpu_inference.dead_letter",
+  "event_id": "0b6d1f3e-8a2c-4c7e-b1d9-5e4f3a2b1c0d",
+  "timestamp": "2026-10-27T18:02:41.530Z",
+  "resource": {
+    "service.name": "sqs-worker",
+    "cloud.region": "us-west-2",
+    "aws.ecs.cluster.arn": "arn:aws:ecs:us-west-2:111122223333:cluster/ecs-gpu-inference-cluster",
+    "aws.ecs.task.arn": "arn:aws:ecs:us-west-2:111122223333:task/ecs-gpu-inference-cluster/fedcba9876543210fedcba9876543210",
+    "aws.ecs.task.family": "gpu-inference-task",
+    "inference.tier": "small"
+  },
+  "attributes": {
+    "inference.dlq.reason": "malformed_input",
+    "inference.dlq.reason_code": "max_tokens_out_of_range",
+    "inference.dlq.source_tier": "small",
+    "inference.dlq.source_queue": "https://sqs.us-west-2.amazonaws.com/111122223333/ecs-gpu-inference-request-queue",
+    "messaging.message.id": "5fea7756-0ea4-451a-a703-a558b933e274",
+    "inference.request.id": "3f2b8c1a-9d4e-4f6a-8b7c-1e2d3c4b5a69",
+    "inference.dlq.dead_lettered_at": "2026-10-27T18:02:41.512Z",
+    "inference.request.enqueued_at": "2026-10-27T18:02:40.077Z",
+    "inference.dlq.error_message": "Field 'maxTokens' must be between 1 and 2048, got 4096"
+  }
+}

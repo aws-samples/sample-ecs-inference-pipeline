@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-samples/sample-ecs-inference-pipeline/telemetry/contract/v1/dead_letter.schema.json",
+  "title": "gpu_inference.dead_letter",
+  "description": "An inference request landed in the dead-letter queue. The reason discriminator separates customer errors (malformed_input: the worker rejected the body and sent it to the DLQ explicitly) from system errors (processing_exhausted: SQS redrove the message after maxReceiveCount failed attempts).",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/envelope" }],
+  "properties": {
+    "event_name": { "const": "gpu_inference.dead_letter" },
+    "resource": {
+      "allOf": [{ "$ref": "common.schema.json#/$defs/resource_common" }],
+      "unevaluatedProperties": false
+    },
+    "attributes": {
+      "type": "object",
+      "required": [
+        "inference.dlq.reason",
+        "inference.dlq.reason_code",
+        "inference.dlq.source_tier",
+        "inference.dlq.source_queue",
+        "messaging.message.id",
+        "inference.dlq.dead_lettered_at"
+      ],
+      "properties": {
+        "inference.dlq.reason": {
+          "description": "Discriminator. malformed_input = customer error; processing_exhausted = system error.",
+          "type": "string",
+          "enum": ["malformed_input", "processing_exhausted"]
+        },
+        "inference.dlq.reason_code": {
+          "description": "Stable machine code. The allowed set depends on inference.dlq.reason (see if/then below).",
+          "type": "string"
+        },
+        "inference.dlq.source_tier": { "$ref": "common.schema.json#/$defs/tier" },
+        "inference.dlq.source_queue": {
+          "description": "Queue the message came from: the OriginalQueue URL on the explicit path, or the DeadLetterQueueSourceArn on the redrive path.",
+          "type": "string",
+          "pattern": "^(https://sqs\\.[a-z0-9-]+\\.amazonaws\\.com/[0-9]{12}/[A-Za-z0-9_-]+|arn:aws[a-z-]*:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+)$"
+        },
+        "messaging.message.id": {
+          "description": "SQS MessageId of the source message.",
+          "type": "string",
+          "minLength": 1
+        },
+        "inference.request.id": {
+          "$ref": "common.schema.json#/$defs/request_id",
+          "description": "Present when the body parsed far enough to yield a valid requestId. Always present for processing_exhausted."
+        },
+        "inference.dlq.receive_count": {
+          "description": "ApproximateReceiveCount when the message was dead-lettered. Required for processing_exhausted.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "inference.dlq.dead_lettered_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "inference.request.enqueued_at": {
+          "$ref": "common.schema.json#/$defs/timestamp",
+          "description": "SQS SentTimestamp of the original request."
+        },
+        "inference.dlq.error_message": {
+          "description": "Human-readable detail (today's free-text ErrorReason, or the last exception message). Not for matching; use reason_code.",
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "inference.dlq.reason": { "const": "malformed_input" } },
+        "required": ["inference.dlq.reason"]
+      },
+      "then": {
+        "properties": {
+          "inference.dlq.reason_code": {
+            "enum": [
+              "body_null",
+              "body_not_string",
+              "invalid_json",
+              "not_json_object",
+              "missing_request_id",
+              "invalid_request_id",
+              "missing_prompt",
+              "prompt_not_string",
+              "prompt_empty",
+              "max_tokens_not_integer",
+              "max_tokens_out_of_range",
+              "temperature_not_number",
+              "temperature_out_of_range",
+              "top_p_not_number",
+              "top_p_out_of_range"
+            ]
+          }
+        }
+      },
+      "else": {
+        "required": ["inference.request.id", "inference.dlq.receive_count"],
+        "properties": {
+          "inference.dlq.reason_code": {
+            "enum": ["inference_failed", "output_write_failed", "unknown"]
+          }
+        }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

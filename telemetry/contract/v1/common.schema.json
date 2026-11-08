@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-samples/sample-ecs-inference-pipeline/telemetry/contract/v1/common.schema.json",
+  "title": "GPU inference telemetry contract v1: shared definitions",
+  "description": "Envelope, resource attributes, and field types shared by every event in contract major version 1. Event schemas compose these definitions; they are not validated on their own.",
+  "$defs": {
+    "contract_version": {
+      "description": "Semantic version of the contract the producer emitted against. Must be major version 1 for this schema set.",
+      "type": "string",
+      "pattern": "^1\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "event_id": {
+      "description": "Unique ID for this event record (UUID). Lets consumers de-duplicate replays.",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "timestamp": {
+      "description": "RFC 3339 UTC timestamp with a Z suffix and optional fractional seconds.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "tier": {
+      "description": "Inference tier. 'small' is the single-GPU tier (RequestQueue); 'large' is the multi-GPU tensor-parallel tier (LargeModelRequestQueue).",
+      "type": "string",
+      "enum": ["small", "large"]
+    },
+    "request_id": {
+      "description": "Inference request ID (UUID v4), as validated by the SQS worker.",
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "ecs_cluster_arn": {
+      "type": "string",
+      "pattern": "^arn:aws[a-z-]*:ecs:[a-z0-9-]+:[0-9]{12}:cluster/[A-Za-z0-9_-]+$"
+    },
+    "ecs_task_arn": {
+      "type": "string",
+      "pattern": "^arn:aws[a-z-]*:ecs:[a-z0-9-]+:[0-9]{12}:task/[A-Za-z0-9_-]+/[0-9a-f]{32}$"
+    },
+    "ecs_container_instance_arn": {
+      "type": "string",
+      "pattern": "^arn:aws[a-z-]*:ecs:[a-z0-9-]+:[0-9]{12}:container-instance/[A-Za-z0-9_-]+/[0-9a-f]{32}$"
+    },
+    "ec2_instance_id": {
+      "type": "string",
+      "pattern": "^i-[0-9a-f]{8,17}$"
+    },
+    "xid_code": {
+      "description": "NVIDIA XID codes on which Amazon ECS marks a Managed Instance IMPAIRED and auto-repair replaces it. Source: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/managed-instances-gpu-auto-repair.html (18 codes as of contract 1.0.0).",
+      "type": "integer",
+      "enum": [46, 48, 54, 62, 64, 74, 79, 95, 109, 110, 136, 140, 142, 143, 151, 155, 156, 158]
+    },
+    "resource_common": {
+      "description": "Resource attributes (OpenTelemetry semantic-convention names where one exists) identifying what emitted the event. Event schemas pick which optional keys they require and close the object with unevaluatedProperties.",
+      "type": "object",
+      "required": ["service.name", "cloud.region", "aws.ecs.cluster.arn"],
+      "properties": {
+        "service.name": {
+          "description": "Logical emitter, e.g. 'sqs-worker', 'router', 'health-normalizer'.",
+          "type": "string",
+          "minLength": 1
+        },
+        "cloud.region": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$"
+        },
+        "cloud.availability_zone": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9][a-z]$"
+        },
+        "aws.ecs.cluster.arn": { "$ref": "#/$defs/ecs_cluster_arn" },
+        "aws.ecs.task.arn": { "$ref": "#/$defs/ecs_task_arn" },
+        "aws.ecs.task.family": { "type": "string", "minLength": 1 },
+        "aws.ecs.task.revision": { "type": "string", "pattern": "^[0-9]+$" },
+        "aws.ecs.container_instance.arn": { "$ref": "#/$defs/ecs_container_instance_arn" },
+        "aws.ecs.capacity_provider.name": { "type": "string", "minLength": 1 },
+        "host.id": { "$ref": "#/$defs/ec2_instance_id" },
+        "host.type": {
+          "description": "EC2 instance type, e.g. g6e.xlarge.",
+          "type": "string",
+          "pattern": "^[a-z0-9-]+\\.[a-z0-9]+$"
+        },
+        "inference.tier": { "$ref": "#/$defs/tier" }
+      }
+    },
+    "envelope": {
+      "description": "Top-level shape shared by every event. Each event schema pins event_name and supplies the resource and attributes constraints.",
+      "type": "object",
+      "required": ["contract_version", "event_name", "event_id", "timestamp", "resource", "attributes"],
+      "properties": {
+        "contract_version": { "$ref": "#/$defs/contract_version" },
+        "event_name": {
+          "type": "string",
+          "enum": ["gpu_inference.gpu_impairment", "gpu_inference.dead_letter", "gpu_inference.cold_start"]
+        },
+        "event_id": { "$ref": "#/$defs/event_id" },
+        "timestamp": {
+          "$ref": "#/$defs/timestamp",
+          "description": "When the producer emitted this record (not when the underlying condition occurred)."
+        },
+        "resource": { "type": "object" },
+        "attributes": { "type": "object" }
+      }
+    }
+  }
+}

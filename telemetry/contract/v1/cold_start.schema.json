@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-samples/sample-ecs-inference-pipeline/telemetry/contract/v1/cold_start.schema.json",
+  "title": "gpu_inference.cold_start",
+  "description": "One scale-from-zero cold start of an inference task, as a per-stage timestamp series from the triggering request's enqueue to the first generated token. Emitted once per task, after its first successful inference. Stage ordering (CR-4) is a semantic rule checked by the conformance harness, not by this schema.",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/envelope" }],
+  "properties": {
+    "event_name": { "const": "gpu_inference.cold_start" },
+    "resource": {
+      "allOf": [{ "$ref": "common.schema.json#/$defs/resource_common" }],
+      "required": ["aws.ecs.task.arn", "host.id", "inference.tier"],
+      "unevaluatedProperties": false
+    },
+    "attributes": {
+      "type": "object",
+      "required": [
+        "inference.model.name",
+        "inference.model.source",
+        "inference.request.id",
+        "cold_start.stages"
+      ],
+      "properties": {
+        "inference.model.name": {
+          "description": "MODEL_NAME, e.g. TheBloke/Mistral-7B-Instruct-v0.2-AWQ.",
+          "type": "string",
+          "minLength": 1
+        },
+        "inference.model.source": {
+          "description": "Where weights were loaded from: 's3' when MODEL_S3_PATH is set, otherwise 'huggingface'.",
+          "type": "string",
+          "enum": ["s3", "huggingface"]
+        },
+        "inference.request.id": {
+          "$ref": "common.schema.json#/$defs/request_id",
+          "description": "The first request this task served, whose enqueue starts the series."
+        },
+        "cold_start.stages": {
+          "description": "Stage timestamps. All five are required; ordering must be non-decreasing in the order listed (CR-4).",
+          "type": "object",
+          "required": ["enqueued", "node_ready", "image_pulled", "weights_loaded", "first_token"],
+          "properties": {
+            "enqueued": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "SQS SentTimestamp of the triggering request."
+            },
+            "node_ready": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "Container instance registeredAt for the instance the task landed on. If the task landed on an already-running instance this equals or precedes 'enqueued'; producers clamp it to 'enqueued' and set cold_start.node_reused = true."
+            },
+            "image_pulled": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "ECS task pullStoppedAt."
+            },
+            "weights_loaded": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "First successful vLLM /health response (weights in VRAM, server ready)."
+            },
+            "first_token": {
+              "$ref": "common.schema.json#/$defs/timestamp",
+              "description": "First completion response returned by vLLM for the triggering request."
+            }
+          },
+          "additionalProperties": false
+        },
+        "cold_start.node_reused": {
+          "description": "True when the task was placed on an instance that was already registered, so node provisioning did not contribute.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "unevaluatedProperties": false
+}

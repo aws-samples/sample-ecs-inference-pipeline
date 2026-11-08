@@ -1,0 +1,31 @@
+{
+  "contract_version": "1.0.0",
+  "event_name": "gpu_inference.cold_start",
+  "event_id": "4d3c2b1a-0f9e-4d8c-b7a6-5f4e3d2c1b0a",
+  "timestamp": "2026-10-27T19:58:31.900Z",
+  "resource": {
+    "service.name": "sqs-worker",
+    "cloud.region": "us-west-2",
+    "cloud.availability_zone": "us-west-2b",
+    "aws.ecs.cluster.arn": "arn:aws:ecs:us-west-2:111122223333:cluster/ecs-gpu-inference-cluster",
+    "aws.ecs.task.arn": "arn:aws:ecs:us-west-2:111122223333:task/ecs-gpu-inference-cluster/0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "aws.ecs.task.family": "gpu-inference-task",
+    "aws.ecs.task.revision": "12",
+    "host.id": "i-0fedcba9876543210",
+    "host.type": "g6e.xlarge",
+    "inference.tier": "small"
+  },
+  "attributes": {
+    "inference.model.name": "TheBloke/Mistral-7B-Instruct-v0.2-AWQ",
+    "inference.model.source": "huggingface",
+    "inference.request.id": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+    "cold_start.stages": {
+      "enqueued": "2026-10-27T19:49:02.115Z",
+      "node_ready": "2026-10-27T19:51:40.600Z",
+      "image_pulled": "2026-10-27T19:54:12.370Z",
+      "weights_loaded": "2026-10-27T19:58:20.040Z",
+      "first_token": "2026-10-27T19:58:31.610Z"
+    },
+    "cold_start.node_reused": false
+  }
+}

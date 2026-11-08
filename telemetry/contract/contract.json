@@ -1,0 +1,35 @@
+{
+  "name": "gpu-inference-telemetry",
+  "version": "1.0.0",
+  "status": "draft",
+  "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "schemas_dir": "v1",
+  "events": {
+    "gpu_inference.gpu_impairment": {
+      "schema": "v1/gpu_impairment.schema.json",
+      "examples": ["v1/examples/gpu_impairment.json"],
+      "consumer_skill": "gpu-impairment"
+    },
+    "gpu_inference.dead_letter": {
+      "schema": "v1/dead_letter.schema.json",
+      "examples": [
+        "v1/examples/dead_letter_malformed_input.json",
+        "v1/examples/dead_letter_processing_exhausted.json"
+      ],
+      "consumer_skill": "dead-letter"
+    },
+    "gpu_inference.cold_start": {
+      "schema": "v1/cold_start.schema.json",
+      "examples": ["v1/examples/cold_start.json"],
+      "consumer_skill": "cold-start"
+    }
+  },
+  "conformance_rules": {
+    "CR-1": { "summary": "Required fields are present on every event.", "enforced_by": "schema" },
+    "CR-2": { "summary": "XID codes match the defined enum.", "enforced_by": "schema" },
+    "CR-3": { "summary": "Dead-letter events carry a reason discriminator and source tier.", "enforced_by": "schema" },
+    "CR-4": { "summary": "Cold-start stage timestamps are non-decreasing: enqueued <= node_ready <= image_pulled <= weights_loaded <= first_token.", "enforced_by": "harness" },
+    "CR-5": { "summary": "For cause 'xid', gpu.health_check.status_reason equals 'XID_' + gpu.xid.code.", "enforced_by": "harness" },
+    "CR-6": { "summary": "contract_version major equals the schema directory major (v1 -> 1.x.y).", "enforced_by": "schema" }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "contract_version": "1.0.0",
+  "event_name": "gpu_inference.gpu_impairment",
+  "event_id": "6f1c2a9e-3b7d-4e1a-9c55-2d8f0b4a7e11",
+  "timestamp": "2026-10-27T19:39:14.204Z",
+  "resource": {
+    "service.name": "health-normalizer",
+    "cloud.region": "us-west-2",
+    "cloud.availability_zone": "us-west-2a",
+    "aws.ecs.cluster.arn": "arn:aws:ecs:us-west-2:111122223333:cluster/ecs-gpu-inference-cluster",
+    "aws.ecs.container_instance.arn": "arn:aws:ecs:us-west-2:111122223333:container-instance/ecs-gpu-inference-cluster/0123456789abcdef0123456789abcdef",
+    "aws.ecs.capacity_provider.name": "gpu-inference-ecs-gpu-inference-capacity",
+    "host.id": "i-0123456789abcdef0",
+    "host.type": "g6.2xlarge"
+  },
+  "attributes": {
+    "gpu.impairment.cause": "xid",
+    "gpu.xid.code": 79,
+    "gpu.health_check.type": "ACCELERATED_COMPUTE",
+    "gpu.health_check.status": "IMPAIRED",
+    "gpu.health_check.status_reason": "XID_79",
+    "gpu.health_check.last_status_change": "2026-10-27T19:39:12Z",
+    "forensics.captured_at": "2026-10-27T19:39:14.101Z",
+    "forensics.task_arns": [
+      "arn:aws:ecs:us-west-2:111122223333:task/ecs-gpu-inference-cluster/fedcba9876543210fedcba9876543210"
+    ],
+    "forensics.task_families": ["gpu-inference-task"],
+    "remediation.auto_repair_enabled": true,
+    "source.event_id": "a1b2c3d4-0000-1111-2222-333344445555"
+  }
+}

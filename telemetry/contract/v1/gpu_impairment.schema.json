@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-samples/sample-ecs-inference-pipeline/telemetry/contract/v1/gpu_impairment.schema.json",
+  "title": "gpu_inference.gpu_impairment",
+  "description": "A GPU container instance was marked IMPAIRED by Amazon ECS. Normalized from the 'ECS Container Instance Health Change' EventBridge event and enriched, before auto-repair replaces the instance, with the tasks running on it (forensic capture).",
+  "type": "object",
+  "allOf": [{ "$ref": "common.schema.json#/$defs/envelope" }],
+  "properties": {
+    "event_name": { "const": "gpu_inference.gpu_impairment" },
+    "resource": {
+      "allOf": [{ "$ref": "common.schema.json#/$defs/resource_common" }],
+      "required": ["host.id", "aws.ecs.container_instance.arn", "aws.ecs.capacity_provider.name"],
+      "unevaluatedProperties": false
+    },
+    "attributes": {
+      "type": "object",
+      "required": [
+        "gpu.impairment.cause",
+        "gpu.health_check.type",
+        "gpu.health_check.status",
+        "gpu.health_check.status_reason",
+        "gpu.health_check.last_status_change",
+        "forensics.captured_at",
+        "forensics.task_arns",
+        "source.event_id"
+      ],
+      "properties": {
+        "gpu.impairment.cause": {
+          "description": "'xid' when statusReason is XID_<n>. 'other' covers non-XID impairments ECS documents, such as an NVIDIA MPS daemon failure.",
+          "type": "string",
+          "enum": ["xid", "other"]
+        },
+        "gpu.xid.code": {
+          "$ref": "common.schema.json#/$defs/xid_code",
+          "description": "Parsed from statusReason (XID_79 -> 79). Required when cause is 'xid'."
+        },
+        "gpu.index": {
+          "description": "GPU index on the host, when known (the ECS event does not carry it; DCGM does).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu.health_check.type": { "const": "ACCELERATED_COMPUTE" },
+        "gpu.health_check.status": { "const": "IMPAIRED" },
+        "gpu.health_check.status_reason": {
+          "description": "Raw healthChecks[].statusReason from the ECS event, kept verbatim.",
+          "type": "string",
+          "minLength": 1
+        },
+        "gpu.health_check.last_status_change": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "forensics.captured_at": {
+          "$ref": "common.schema.json#/$defs/timestamp",
+          "description": "When task identifiers were read from the impaired instance."
+        },
+        "forensics.task_arns": {
+          "description": "Tasks running on the instance at capture time (ListTasks by containerInstance). May be empty, but must be present: an absent list means capture was skipped.",
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/ecs_task_arn" },
+          "uniqueItems": true
+        },
+        "forensics.task_families": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "remediation.auto_repair_enabled": {
+          "description": "autoRepairConfiguration.actionsStatus == ENABLED on the capacity provider at capture time.",
+          "type": "boolean"
+        },
+        "source.event_id": {
+          "description": "EventBridge event 'id' this record was normalized from.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": { "gpu.impairment.cause": { "const": "xid" } },
+        "required": ["gpu.impairment.cause"]
+      },
+      "then": {
+        "required": ["gpu.xid.code"],
+        "properties": {
+          "gpu.health_check.status_reason": { "pattern": "^XID_[0-9]+$" }
+        }
+      },
+      "else": {
+        "not": { "required": ["gpu.xid.code"] }
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
